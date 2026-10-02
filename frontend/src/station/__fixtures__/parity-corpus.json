@@ -1,0 +1,6484 @@
+{
+  "blocklist": {
+    "reason": "Код маркировки заблокирован. Отгрузка запрещена",
+    "sample": {
+      "sha256": "439c86b2ed11504b26b0b4cbfd8935675826c468ac676ac6cda4ba19d2b954eb",
+      "text": "0104006396053947215ABCDEFGHIJKLMNOP"
+    },
+    "sha256": [
+      "cd7dc6aea0b6045ec64ed14b515fab810d50343f97baa36bf4f5d32d5ccb7c0d",
+      "ffcdb881f32655b466c89451acdccc09e8c001fa100fd9d37bf557024c1d755c"
+    ]
+  },
+  "blocks": [
+    {
+      "input": {
+        "codes": [
+          "0104006396053947215ABCDEFGHIJKLMNOP",
+          "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "row": {
+          "address": "Ташкент, ул. Пример, 1",
+          "client": "ООО Тест",
+          "codes": [],
+          "date": "02.10.2026",
+          "entries": [],
+          "item": "item-1",
+          "order": "order-1",
+          "payment": "Перечисление",
+          "plan": 60,
+          "product": "Chapman RED OP 20",
+          "representative": "Иванов",
+          "request": "WH-R-101",
+          "request_id": "",
+          "total": 14400000
+        }
+      },
+      "name": "box_is_fifty_unit_is_one",
+      "output": 52
+    },
+    {
+      "input": {
+        "codes": [
+          "0104006396053947215ABCDEFGHIJKLMNOP",
+          "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ],
+        "row": {
+          "address": "Ташкент, ул. Пример, 1",
+          "client": "ООО Тест",
+          "codes": [],
+          "date": "02.10.2026",
+          "entries": [
+            {
+              "block_quantity": 7,
+              "code": "0104006396053947215ABCDEFGHIJKLMNOP"
+            },
+            {
+              "block_quantity": 0,
+              "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            }
+          ],
+          "item": "item-1",
+          "order": "order-1",
+          "payment": "Перечисление",
+          "plan": 60,
+          "product": "Chapman RED OP 20",
+          "representative": "Иванов",
+          "request": "WH-R-101",
+          "request_id": "",
+          "total": 14400000
+        }
+      },
+      "name": "recorded_quantity_wins_unless_not_positive",
+      "output": 57
+    },
+    {
+      "input": {
+        "codes": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "row": {
+          "address": "Ташкент, ул. Пример, 1",
+          "client": "ООО Тест",
+          "codes": [],
+          "date": "02.10.2026",
+          "entries": [
+            {
+              "block_quantity": 4,
+              "code": "0104006396053947215ABCDEFGHIJKLMNOP"
+            },
+            {
+              "block_quantity": 5,
+              "code": "0104006396053947215ABCDEFGHIJKLMNOP"
+            },
+            {
+              "block_quantity": 9,
+              "code": "  "
+            }
+          ],
+          "item": "item-1",
+          "order": "order-1",
+          "payment": "Перечисление",
+          "plan": 60,
+          "product": "Chapman RED OP 20",
+          "representative": "Иванов",
+          "request": "WH-R-101",
+          "request_id": "",
+          "total": 14400000
+        }
+      },
+      "name": "last_entry_of_a_code_wins",
+      "output": 5
+    },
+    {
+      "input": {
+        "codes": [],
+        "row": {
+          "address": "Ташкент, ул. Пример, 1",
+          "client": "ООО Тест",
+          "codes": [],
+          "date": "02.10.2026",
+          "entries": [],
+          "item": "item-1",
+          "order": "order-1",
+          "payment": "Перечисление",
+          "plan": 60,
+          "product": "Chapman RED OP 20",
+          "representative": "Иванов",
+          "request": "WH-R-101",
+          "request_id": "",
+          "total": 14400000
+        }
+      },
+      "name": "no_codes",
+      "output": 0
+    }
+  ],
+  "duplicate_messages": [
+    {
+      "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+      "owner": {},
+      "status": {},
+      "text": "КИЗ уже отсканирован в другом заказе.\nВладелец в локальном списке не найден.\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ."
+    },
+    {
+      "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+      "owner": {
+        "client": "ООО Другой",
+        "order_date_display": "01.10.2026",
+        "product": "Chapman RED OP 20",
+        "skladbot_request_number": "WH-R-7"
+      },
+      "status": {
+        "available": false,
+        "checked": true,
+        "latest_movement_type": "outbound",
+        "reason": "latest movement is outbound"
+      },
+      "text": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ."
+    },
+    {
+      "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+      "owner": {},
+      "status": {
+        "available": false,
+        "checked": false,
+        "reason": "backend availability check failed"
+      },
+      "text": "КИЗ уже отсканирован в другом заказе.\nВладелец в локальном списке не найден.\nBackend-проверка повтора недоступна: backend availability check failed\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ."
+    },
+    {
+      "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+      "owner": {
+        "client": "ООО Другой",
+        "order_date_display": "01.10.2026",
+        "product": "Chapman RED OP 20",
+        "skladbot_request_number": "WH-R-7"
+      },
+      "status": {
+        "available": true,
+        "checked": true,
+        "latest_movement_type": "return",
+        "reason": "latest movement is return"
+      },
+      "text": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend разрешил повтор: latest movement is return\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ."
+    },
+    {
+      "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+      "owner": {
+        "client": "ООО Другой",
+        "order_date_display": "01.10.2026",
+        "product": "Chapman RED OP 20",
+        "skladbot_request_number": "WH-R-7"
+      },
+      "status": {
+        "available": false,
+        "checked": true,
+        "latest_movement_type": "",
+        "reason": "no reason"
+      },
+      "text": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор: no reason\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ."
+    }
+  ],
+  "first_incomplete": [
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "A",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "B",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "all_fresh",
+      "output": {
+        "index": 0
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "A",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "B",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "first_done",
+      "output": {
+        "index": 1
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "A",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053978215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "B",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "all_done",
+      "output": {
+        "index": 2
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 0,
+            "product": "A",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "B",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "zero_plan_first",
+      "output": {
+        "index": 0
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 50,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 12000000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "B",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "box_fills",
+      "output": {
+        "index": 1
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "A",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ]
+      },
+      "name": "gs_code_counts_once",
+      "output": {
+        "index": 1
+      }
+    },
+    {
+      "input": {
+        "rows": []
+      },
+      "name": "no_rows",
+      "output": {
+        "index": 0
+      }
+    }
+  ],
+  "order_list": [
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": ""
+      },
+      "name": "search (empty)",
+      "output": {
+        "counter": "Показаны 6 из 6",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "ВЧЕРА, 01.10.2026"
+          },
+          {
+            "client": "ООО Дельта",
+            "group_key": [
+              "WH-R-40",
+              "ООО Дельта",
+              "Перечисление",
+              "Адрес Д"
+            ],
+            "kind": "order",
+            "meta": "WH-R-40 · Вчера, 01.10.2026",
+            "summary": "1 SKU · 4 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "ООО Альфа",
+            "group_key": [
+              "WH-R-3",
+              "ООО Альфа",
+              "Терминал",
+              "Адрес А"
+            ],
+            "kind": "order",
+            "meta": "WH-R-3 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 2 блоков"
+          },
+          {
+            "client": "ООО Бета",
+            "group_key": [
+              "WH-R-12",
+              "ООО Бета",
+              "Перечисление",
+              "Адрес Б"
+            ],
+            "kind": "order",
+            "meta": "WH-R-12 · Сегодня, 02.10.2026",
+            "summary": "2 SKU · 8 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "ЗАВТРА, 03.10.2026"
+          },
+          {
+            "client": "ИП Гамма",
+            "group_key": [
+              "",
+              "ИП Гамма",
+              "Оплата не указана",
+              "Адрес не указан"
+            ],
+            "kind": "order",
+            "meta": "Без номера SkladBot · Завтра, 03.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "05.10.2026"
+          },
+          {
+            "client": "ООО Зета",
+            "group_key": [
+              "WH-R-5",
+              "ООО Зета",
+              "Терминал",
+              "Адрес З"
+            ],
+            "kind": "order",
+            "meta": "WH-R-5 · 05.10.2026",
+            "summary": "1 SKU · 7 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "БЕЗ"
+          },
+          {
+            "client": "ООО Ёлка",
+            "group_key": [
+              "WR-9",
+              "ООО Ёлка",
+              "Перечисление",
+              "Адрес Ё"
+            ],
+            "kind": "order",
+            "meta": "WR-9 · Без",
+            "summary": "1 SKU · 6 блоков"
+          }
+        ],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "бета"
+      },
+      "name": "search бета",
+      "output": {
+        "counter": "Показаны 1 из 6",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "ООО Бета",
+            "group_key": [
+              "WH-R-12",
+              "ООО Бета",
+              "Перечисление",
+              "Адрес Б"
+            ],
+            "kind": "order",
+            "meta": "WH-R-12 · Сегодня, 02.10.2026",
+            "summary": "2 SKU · 8 блоков"
+          }
+        ],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "WH-R-3"
+      },
+      "name": "search WH-R-3",
+      "output": {
+        "counter": "Показаны 1 из 6",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "ООО Альфа",
+            "group_key": [
+              "WH-R-3",
+              "ООО Альфа",
+              "Терминал",
+              "Адрес А"
+            ],
+            "kind": "order",
+            "meta": "WH-R-3 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 2 блоков"
+          }
+        ],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "без номера"
+      },
+      "name": "search без номера",
+      "output": {
+        "counter": "Показаны 1 из 6",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "ЗАВТРА, 03.10.2026"
+          },
+          {
+            "client": "ИП Гамма",
+            "group_key": [
+              "",
+              "ИП Гамма",
+              "Оплата не указана",
+              "Адрес не указан"
+            ],
+            "kind": "order",
+            "meta": "Без номера SkladBot · Завтра, 03.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "kssl"
+      },
+      "name": "search kssl",
+      "output": {
+        "counter": "Показаны 1 из 6",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "БЕЗ"
+          },
+          {
+            "client": "ООО Ёлка",
+            "group_key": [
+              "WR-9",
+              "ООО Ёлка",
+              "Перечисление",
+              "Адрес Ё"
+            ],
+            "kind": "order",
+            "meta": "WR-9 · Без",
+            "summary": "1 SKU · 6 блоков"
+          }
+        ],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Б",
+            "client": "ООО Бета",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Петров",
+            "request": "WH-R-12",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес А",
+            "client": "ООО Альфа",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Петров",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "",
+            "client": "ИП Гамма",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman Green OP",
+            "representative": "Петров",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Д",
+            "client": "ООО Дельта",
+            "codes": [],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 4,
+            "product": "Chapman RED SSL",
+            "representative": "Петров",
+            "request": "WH-R-40",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес Ё",
+            "client": "ООО Ёлка",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 6,
+            "product": "Chapman Brown KSSL",
+            "representative": "Петров",
+            "request": "WR-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "Адрес З",
+            "client": "ООО Зета",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Терминал",
+            "plan": 7,
+            "product": "Chapman RED OP 20",
+            "representative": "Петров",
+            "request": "WH-R-5",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "нет такого"
+      },
+      "name": "search нет такого",
+      "output": {
+        "counter": "Показаны 0 из 6",
+        "rows": [],
+        "subtitle": "6 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-2",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К2",
+            "codes": [],
+            "date": "05.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": ""
+      },
+      "name": "one_date_two_spellings",
+      "output": {
+        "counter": "Показаны 2 из 2",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "05.10.2026"
+          },
+          {
+            "client": "К2",
+            "group_key": [
+              "WH-R-1",
+              "К2",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · 05.10.2026",
+            "summary": "1 SKU · 2 блоков"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "WH-R-2",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-2 · 05.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "2 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": ""
+      },
+      "name": "card_takes_date_of_first_position",
+      "output": {
+        "counter": "Показаны 1 из 1",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "WH-R-1",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · Сегодня, 02.10.2026",
+            "summary": "2 SKU · 5 блоков"
+          }
+        ],
+        "subtitle": "1 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "Без даты",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К2",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-2",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К3",
+            "codes": [],
+            "date": "x",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-3",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К4",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-4",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": ""
+      },
+      "name": "unreadable_dates_keep_first_seen_order",
+      "output": {
+        "counter": "Показаны 4 из 4",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "ЗАВТРА, 03.10.2026"
+          },
+          {
+            "client": "К4",
+            "group_key": [
+              "WH-R-4",
+              "К4",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-4 · Завтра, 03.10.2026",
+            "summary": "1 SKU · 3 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "БЕЗ"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "WH-R-1",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · Без",
+            "summary": "1 SKU · 2 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "БЕЗ"
+          },
+          {
+            "client": "К2",
+            "group_key": [
+              "WH-R-2",
+              "К2",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-2 · Без",
+            "summary": "1 SKU · 3 блоков"
+          },
+          {
+            "kind": "date",
+            "title": "X"
+          },
+          {
+            "client": "К3",
+            "group_key": [
+              "WH-R-3",
+              "К3",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-3 · x",
+            "summary": "1 SKU · 3 блоков"
+          }
+        ],
+        "subtitle": "4 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "Ёж",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "б",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-10",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "а",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "Б",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "я",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "A-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "😀",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-9",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "Ａ",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-9",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": ""
+      },
+      "name": "cards_sorted_by_number_then_code_point",
+      "output": {
+        "counter": "Показаны 7 из 7",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "я",
+            "group_key": [
+              "A-9",
+              "я",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "A-9 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "а",
+            "group_key": [
+              "WH-R-9",
+              "а",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-9 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "Б",
+            "group_key": [
+              "WH-R-9",
+              "Б",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-9 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "Ａ",
+            "group_key": [
+              "WH-R-9",
+              "Ａ",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-9 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "😀",
+            "group_key": [
+              "WH-R-9",
+              "😀",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-9 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "б",
+            "group_key": [
+              "WH-R-10",
+              "б",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-10 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          },
+          {
+            "client": "Ёж",
+            "group_key": [
+              "",
+              "Ёж",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "Без номера SkladBot · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "7 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "",
+            "client": "",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": " WH-R-1 ",
+            "request_id": "",
+            "total": 240000
+          }
+        ],
+        "search": ""
+      },
+      "name": "empty_parts_of_the_key",
+      "output": {
+        "counter": "Показаны 1 из 1",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "Клиент не указан",
+            "group_key": [
+              "WH-R-1",
+              "Клиент не указан",
+              "Оплата не указана",
+              "Адрес не указан"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "1 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman Gold SSL",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К2",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-2",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "gold"
+      },
+      "name": "search_counts_every_position_of_a_card",
+      "output": {
+        "counter": "Показаны 1 из 2",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "WH-R-1",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · Сегодня, 02.10.2026",
+            "summary": "2 SKU · 5 блоков"
+          }
+        ],
+        "subtitle": "2 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman Gold SSL",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К2",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-2",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "  R  "
+      },
+      "name": "search_is_trimmed_and_lowercased",
+      "output": {
+        "counter": "Показаны 2 из 2",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "WH-R-1",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-1 · Сегодня, 02.10.2026",
+            "summary": "2 SKU · 5 блоков"
+          },
+          {
+            "client": "К2",
+            "group_key": [
+              "WH-R-2",
+              "К2",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-2 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "2 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 3,
+            "product": "Chapman Gold SSL",
+            "representative": "R",
+            "request": "WH-R-1",
+            "request_id": "",
+            "total": 0
+          },
+          {
+            "address": "A",
+            "client": "К2",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "WH-R-2",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "wh-r-2 к2"
+      },
+      "name": "search_by_request_and_client",
+      "output": {
+        "counter": "Показаны 1 из 2",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "К2",
+            "group_key": [
+              "WH-R-2",
+              "К2",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "WH-R-2 · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "2 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [
+          {
+            "address": "A",
+            "client": "К1",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "T",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "R",
+            "request": "",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "search": "без номера skladbot"
+      },
+      "name": "search_by_placeholder_text",
+      "output": {
+        "counter": "Показаны 1 из 1",
+        "rows": [
+          {
+            "kind": "date",
+            "title": "СЕГОДНЯ, 02.10.2026"
+          },
+          {
+            "client": "К1",
+            "group_key": [
+              "",
+              "К1",
+              "T",
+              "A"
+            ],
+            "kind": "order",
+            "meta": "Без номера SkladBot · Сегодня, 02.10.2026",
+            "summary": "1 SKU · 1 блоков"
+          }
+        ],
+        "subtitle": "1 активных заказов · список листается вниз"
+      }
+    },
+    {
+      "input": {
+        "rows": [],
+        "search": ""
+      },
+      "name": "no_rows",
+      "output": {
+        "counter": "Показаны 0 из 0",
+        "rows": [],
+        "subtitle": "0 активных заказов · список листается вниз"
+      }
+    }
+  ],
+  "owners": [
+    {
+      "input": {
+        "code": " 0104006396053947215ABCDEFGHIJKLMNOP\n",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ]
+      },
+      "name": "first_row_that_holds_the_code",
+      "output": {
+        "client": "ООО Другой",
+        "date": "01.10.2026",
+        "product": "Chapman RED OP 20",
+        "request": "WH-R-7"
+      }
+    },
+    {
+      "input": {
+        "code": "",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ]
+      },
+      "name": "empty_code",
+      "output": null
+    },
+    {
+      "input": {
+        "code": "0100000000000000021X",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ]
+      },
+      "name": "unknown_code",
+      "output": null
+    },
+    {
+      "input": {
+        "code": "0104006396053947215ABCDEFG\u001dIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ]
+      },
+      "name": "gs_code",
+      "output": null
+    }
+  ],
+  "palette": {
+    "desktop": {
+      "ACCENT": "#b28224",
+      "BG_CARD": "#fffdf7",
+      "BG_MAIN": "#f4f1e8",
+      "BORDER": "#d8d0bf",
+      "DANGER": "#b7483c",
+      "DISABLED_BG": "#e0d7b9",
+      "DISABLED_FG": "#8f8878",
+      "ERROR_BG": "#f8ded9",
+      "ERROR_FG": "#b7483c",
+      "FG_MUTED": "#777066",
+      "FG_TEXT": "#2e2c28",
+      "INFO": "#3a6b8f",
+      "SUCCESS": "#2f8a4a",
+      "WARNING": "#d8b64c"
+    },
+    "fade": [
+      {
+        "amount": 0.1,
+        "color": "#f4f1e8",
+        "result": "#f5f2ea"
+      },
+      {
+        "amount": 0.1,
+        "color": "#fffdf7",
+        "result": "#fffdf7"
+      },
+      {
+        "amount": 0.1,
+        "color": "#2e2c28",
+        "result": "#42413d"
+      },
+      {
+        "amount": 0.1,
+        "color": "#777066",
+        "result": "#847e75"
+      },
+      {
+        "amount": 0.1,
+        "color": "#b28224",
+        "result": "#b98e39"
+      },
+      {
+        "amount": 0.1,
+        "color": "#2f8a4a",
+        "result": "#43955c"
+      },
+      {
+        "amount": 0.1,
+        "color": "#3a6b8f",
+        "result": "#4d799a"
+      },
+      {
+        "amount": 0.1,
+        "color": "#d8b64c",
+        "result": "#dbbd5d"
+      },
+      {
+        "amount": 0.1,
+        "color": "#b7483c",
+        "result": "#be5a4f"
+      },
+      {
+        "amount": 0.1,
+        "color": "#f8ded9",
+        "result": "#f8e1dc"
+      },
+      {
+        "amount": 0.1,
+        "color": "#b7483c",
+        "result": "#be5a4f"
+      },
+      {
+        "amount": 0.1,
+        "color": "#d8d0bf",
+        "result": "#dbd4c5"
+      },
+      {
+        "amount": 0.1,
+        "color": "#e0d7b9",
+        "result": "#e3dbc0"
+      },
+      {
+        "amount": 0.1,
+        "color": "#8f8878",
+        "result": "#9a9385"
+      },
+      {
+        "amount": 0.12,
+        "color": "#c4ad7a",
+        "result": "#cbb689"
+      },
+      {
+        "amount": 0.1,
+        "color": "#abc",
+        "result": "#abc"
+      },
+      {
+        "amount": 0.1,
+        "color": "#zzzzzz",
+        "result": "#zzzzzz"
+      },
+      {
+        "amount": 0.1,
+        "color": "b28224",
+        "result": "#b98e39"
+      },
+      {
+        "amount": 2,
+        "color": "#b28224",
+        "result": "#ffffff"
+      },
+      {
+        "amount": -1,
+        "color": "#b28224",
+        "result": "#b28224"
+      }
+    ],
+    "window": {
+      "GTIN_BADGE_FG": "#fff7df",
+      "LIST_SURFACE_BG": "#fffaf2",
+      "PLACEHOLDER_FG": "#a7a095",
+      "PRODUCT_PHOTO_BG": "#fffaf0",
+      "PRODUCT_PHOTO_SHELL_BG": "#f3ead8",
+      "SCROLLBAR_BG": "#e5dcc8",
+      "SCROLLBAR_THUMB": "#c4ad7a",
+      "SCROLLBAR_THUMB_HOVER": "#cbb689",
+      "SELECTED_CARD_BG": "#fff6df"
+    }
+  },
+  "position": [
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman Brown OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-102",
+            "request_id": "",
+            "total": 720000
+          }
+        ]
+      },
+      "name": "fresh_first_of_two",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 480 000 сум\n📦 План: 2 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 2 поз. · 5 блок. · 1 200 000 сум\nДата отгрузки: Сегодня, 02.10.2026, Завтра, 03.10.2026 · Заявка: WH-R-101, WH-R-102",
+        "position": "Позиция 1 из 2",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 2"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ]
+      },
+      "name": "partly_scanned",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 720 000 сум\n📦 План: 3 блоков (1 блок = 10 ШТ)",
+        "last_code": "Уже записано: 1 блоков, 1 кодов",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 3 блок. · 720 000 сум\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "Позиция 1 из 1",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "1 / 3"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman Gold SSL",
+            "representative": "Иванов",
+            "request": "WH-R-102",
+            "request_id": "",
+            "total": 480000
+          }
+        ]
+      },
+      "name": "done_not_last",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "Уже записано: 1 блоков, 1 кодов",
+        "next_state": "normal",
+        "party": "Партия: 2 поз. · 3 блок. · 720 000 сум\nДата отгрузки: Сегодня, 02.10.2026, Завтра, 03.10.2026 · Заявка: WH-R-101, WH-R-102",
+        "position": "Позиция 1 из 2",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "1 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 1,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman Gold SSL",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-102",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "done_last",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "normal",
+        "info": "№ SkladBot: WH-R-102\n📅 Дата отгрузки: 03.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "Уже записано: 1 блоков, 1 кодов",
+        "next_state": "disabled",
+        "party": "Партия: 2 поз. · 2 блок. · 480 000 сум\nДата отгрузки: Сегодня, 02.10.2026, Завтра, 03.10.2026 · Заявка: WH-R-101, WH-R-102",
+        "position": "Позиция 2 из 2",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "1 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 60,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 14400000
+          }
+        ]
+      },
+      "name": "box_scanned",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 14 400 000 сум\n📦 План: 60 блоков (1 блок = 10 ШТ)",
+        "last_code": "Уже записано: 50 блоков, 1 кодов",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 60 блок. · 14 400 000 сум\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "Позиция 1 из 1",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "50 / 60"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "",
+            "client": "",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 0,
+            "product": "",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 0
+          }
+        ]
+      },
+      "name": "empty_names",
+      "output": {
+        "client": "🏢 Юр.лицо не указано",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: \n💳 Тип оплаты: Перечисление\n💰 Сумма: не указана\n📦 План: 0 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 0 блок. · сумма не указана\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "Позиция 1 из 1",
+        "product": "📦 SKU не указан",
+        "progress": "0 / 0"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [
+              "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+            ],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ]
+      },
+      "name": "gs_code_is_one_code",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 480 000 сум\n📦 План: 2 блоков (1 блок = 10 ШТ)",
+        "last_code": "Уже записано: 1 блоков, 1 кодов",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 2 блок. · 480 000 сум\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "Позиция 1 из 1",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "1 / 2"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": -1234
+          }
+        ]
+      },
+      "name": "negative_line_total",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-101\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: -1 234 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 1 блок. · сумма не указана\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "Позиция 1 из 1",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 1,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "past_the_last_position",
+      "output": {
+        "client": "",
+        "finish_state": "",
+        "info": "",
+        "last_code": "",
+        "next_state": "",
+        "party": "Партия: 1 поз. · 1 блок. · 240 000 сум\nДата отгрузки: Сегодня, 02.10.2026 · Заявка: WH-R-101",
+        "position": "",
+        "product": "",
+        "progress": ""
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": []
+      },
+      "name": "no_rows",
+      "output": {
+        "client": "",
+        "finish_state": "",
+        "info": "",
+        "last_code": "",
+        "next_state": "",
+        "party": "Партия не выбрана",
+        "position": "",
+        "product": "",
+        "progress": ""
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-9",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "2026-10-05",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-10",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "05.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-100",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "party_many_requests_and_dates",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: WH-R-9\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 4 поз. · 4 блок. · 960 000 сум\nДата отгрузки: Сегодня, 02.10.2026, 05.10.2026 · Заявка: WH-R-10, WH-R-100 +1",
+        "position": "Позиция 1 из 4",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "😀",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "03.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "Ａ",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "party_requests_by_code_point",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: 😀\n📅 Дата отгрузки: 02.10.2026\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 2 поз. · 2 блок. · 480 000 сум\nДата отгрузки: Сегодня, 02.10.2026, Завтра, 03.10.2026 · Заявка: Ａ, 😀",
+        "position": "Позиция 1 из 2",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "party_without_request_and_date",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: \n📅 Дата отгрузки: не указана\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 1 поз. · 1 блок. · 240 000 сум\nДата отгрузки: дата не указана · Заявка: без номера SkladBot",
+        "position": "Позиция 1 из 1",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "Без даты",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "party_free_text_date",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: \n📅 Дата отгрузки: Без даты\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 2 поз. · 2 блок. · 480 000 сум\nДата отгрузки: Без · Заявка: без номера SkladBot",
+        "position": "Позиция 1 из 2",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    },
+    {
+      "input": {
+        "index": 0,
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "'01.10.2026'",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "A",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "30.02.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "B",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "04.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "C",
+            "request_id": "",
+            "total": 240000
+          }
+        ]
+      },
+      "name": "party_unreadable_date_last",
+      "output": {
+        "client": "🏢 ООО Тест",
+        "finish_state": "disabled",
+        "info": "№ SkladBot: A\n📅 Дата отгрузки: '01.10.2026'\n👤 Торг.пред: Иванов\n📍 Адрес: Ташкент, ул. Пример, 1\n💳 Тип оплаты: Перечисление\n💰 Сумма: 240 000 сум\n📦 План: 1 блоков (1 блок = 10 ШТ)",
+        "last_code": "",
+        "next_state": "disabled",
+        "party": "Партия: 3 поз. · 3 блок. · 720 000 сум\nДата отгрузки: Вчера, 01.10.2026, 04.10.2026, 30.02.2026 · Заявка: A, B +1",
+        "position": "Позиция 1 из 3",
+        "product": "📦 Chapman RED OP 20",
+        "progress": "0 / 1"
+      }
+    }
+  ],
+  "products": {
+    "code_keys": [
+      {
+        "blocks": 1,
+        "code": "0104006396054005215ABCDEFGHIJKLMNOP",
+        "key": "gold:ssl",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396053978215ABCDEFGHIJKLMNOP",
+        "key": "brown:op",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "key": "red:op",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396054067215ABCDEFGHIJKLMNOP",
+        "key": "brown:ssl",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396054036215ABCDEFGHIJKLMNOP",
+        "key": "red:ssl",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396104441215ABCDEFGHIJKLMNOP",
+        "key": "green:op",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396104199215ABCDEFGHIJKLMNOP",
+        "key": "brown:kssl",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396104229215ABCDEFGHIJKLMNOP",
+        "key": "green:kssl",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396054012215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "gold:ssl",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396053985215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "brown:op",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "red:op",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396054074215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "brown:ssl",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396054043215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "red:ssl",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396104448215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "green:op",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396104458215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "green:op",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396104205215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "brown:kssl",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 50,
+        "code": "0104006396104236215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "green:kssl",
+        "scan_type": "aggregate_box"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396099999215XYZ",
+        "key": "",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "",
+        "key": "",
+        "scan_type": "unit"
+      },
+      {
+        "blocks": 1,
+        "code": "0104006396053947215ABCDEFG\u001dIJKLMNOP",
+        "key": "red:op",
+        "scan_type": "unit"
+      }
+    ],
+    "guard_none": {
+      "message": "SKU-защита недоступна: выберите позицию.",
+      "state": "unavailable"
+    },
+    "labels": [
+      {
+        "key": "brown:op",
+        "label": "Brown OP"
+      },
+      {
+        "key": "red:op",
+        "label": "RED OP"
+      },
+      {
+        "key": "gold:ssl",
+        "label": "Gold SSL"
+      },
+      {
+        "key": "brown:ssl",
+        "label": "Brown SSL"
+      },
+      {
+        "key": "red:ssl",
+        "label": "RED SSL"
+      },
+      {
+        "key": "green:op",
+        "label": "Green OP"
+      },
+      {
+        "key": "brown:kssl",
+        "label": "Brown KSSL"
+      },
+      {
+        "key": "green:kssl",
+        "label": "Green KSSL"
+      },
+      {
+        "key": "blue:op",
+        "label": "blue:op"
+      },
+      {
+        "key": "constructor",
+        "label": "constructor"
+      },
+      {
+        "key": "  ",
+        "label": "не распознан"
+      },
+      {
+        "key": null,
+        "label": "не распознан"
+      }
+    ],
+    "mismatch": [
+      {
+        "box_mismatch": false,
+        "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "mismatch": false,
+        "product": "Неизвестный товар"
+      },
+      {
+        "box_mismatch": false,
+        "code": "0100000000000000021X",
+        "mismatch": false,
+        "product": ""
+      },
+      {
+        "box_mismatch": false,
+        "code": "0104006396053978215ABCDEFGHIJKLMNOP",
+        "mismatch": true,
+        "product": "Chapman RED OP 20"
+      },
+      {
+        "box_mismatch": false,
+        "code": "0104006396099999215XYZ",
+        "mismatch": true,
+        "product": "Chapman RED OP 20"
+      },
+      {
+        "box_mismatch": false,
+        "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "mismatch": false,
+        "product": "Chapman RED OP 20"
+      },
+      {
+        "box_mismatch": false,
+        "code": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "mismatch": true,
+        "product": "Chapman Brown OP"
+      },
+      {
+        "box_mismatch": false,
+        "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "mismatch": false,
+        "product": "Chapman RED OP 20"
+      },
+      {
+        "box_mismatch": true,
+        "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "mismatch": true,
+        "product": "Chapman Brown OP"
+      },
+      {
+        "box_mismatch": true,
+        "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "mismatch": false,
+        "product": "Неизвестный товар"
+      }
+    ],
+    "names": [
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "Chapman RED OP 20"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Brown OP.",
+          "product_key": "brown:op",
+          "state": "active"
+        },
+        "key": "brown:op",
+        "product": "Chapman Brown OP 20"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Gold SSL.",
+          "product_key": "gold:ssl",
+          "state": "active"
+        },
+        "key": "gold:ssl",
+        "product": "Chapman Gold SSL"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED SSL.",
+          "product_key": "red:ssl",
+          "state": "active"
+        },
+        "key": "red:ssl",
+        "product": "Chapman RED SSL 100`20"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green OP.",
+          "product_key": "green:op",
+          "state": "active"
+        },
+        "key": "green:op",
+        "product": "Chapman Green OP"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Brown KSSL.",
+          "product_key": "brown:kssl",
+          "state": "active"
+        },
+        "key": "brown:kssl",
+        "product": "Chapman Brown KSSL"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green KSSL.",
+          "product_key": "green:kssl",
+          "state": "active"
+        },
+        "key": "green:kssl",
+        "product": "Chapman KSSL Green"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Brown OP.",
+          "product_key": "brown:op",
+          "state": "active"
+        },
+        "key": "brown:op",
+        "product": "chapman brownop"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не распознан (Unmapped Product).",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": "Unmapped Product"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не указан.",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": ""
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не распознан (Мёд).",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": " Мёд "
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не распознан (Chapman Ｒed OP).",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": "Chapman Ｒed OP"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green KSSL.",
+          "product_key": "green:kssl",
+          "state": "active"
+        },
+        "key": "green:kssl",
+        "product": "CHAPMAN GREEN KSSL"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "Chapman `Red` 'op'"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "red\u001dop"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED SSL.",
+          "product_key": "red:ssl",
+          "state": "active"
+        },
+        "key": "red:ssl",
+        "product": "red\u00a0ssl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Gold SSL.",
+          "product_key": "gold:ssl",
+          "state": "active"
+        },
+        "key": "gold:ssl",
+        "product": "gold  ssl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "Chapman Red SSL OP"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green KSSL.",
+          "product_key": "green:kssl",
+          "state": "active"
+        },
+        "key": "green:kssl",
+        "product": "greenkssl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green KSSL.",
+          "product_key": "green:kssl",
+          "state": "active"
+        },
+        "key": "green:kssl",
+        "product": "kssl green"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "\ufeffred op"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не распознан (Red\ufeffop).",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": "Red\ufeffop"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Gold SSL.",
+          "product_key": "gold:ssl",
+          "state": "active"
+        },
+        "key": "gold:ssl",
+        "product": "gold ßl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Gold SSL.",
+          "product_key": "gold:ssl",
+          "state": "active"
+        },
+        "key": "gold:ssl",
+        "product": "GOLD ſsl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита не активна: товар не распознан (red ﬁ).",
+          "state": "unknown"
+        },
+        "key": "",
+        "product": "red ﬁ"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED OP.",
+          "product_key": "red:op",
+          "state": "active"
+        },
+        "key": "red:op",
+        "product": "Red\u001cop"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: RED SSL.",
+          "product_key": "red:ssl",
+          "state": "active"
+        },
+        "key": "red:ssl",
+        "product": "red\u0085ssl"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Green KSSL.",
+          "product_key": "green:kssl",
+          "state": "active"
+        },
+        "key": "green:kssl",
+        "product": "kssl\u2003green"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Brown OP.",
+          "product_key": "brown:op",
+          "state": "active"
+        },
+        "key": "brown:op",
+        "product": "\"brown\"op"
+      },
+      {
+        "guard": {
+          "message": "SKU-защита активна: Brown KSSL.",
+          "product_key": "brown:kssl",
+          "state": "active"
+        },
+        "key": "brown:kssl",
+        "product": "brown\tkssl"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "input": {
+        "address": "Ташкент",
+        "client": "ООО Тест",
+        "id": "o-1",
+        "items": [
+          {
+            "block_price": 240000,
+            "id": "i-1",
+            "line_total": 14400000,
+            "product": "Chapman RED OP 20",
+            "quantity_blocks": 60,
+            "quantity_pieces": 600,
+            "scan_codes": [
+              "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ],
+            "scan_entries": [
+              {
+                "block_quantity": 50,
+                "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "scan_type": "aggregate_box",
+                "scanned_at": null
+              }
+            ],
+            "scanned_blocks": 50,
+            "status": "new"
+          },
+          {
+            "id": "i-2",
+            "product": "Chapman Brown OP 20",
+            "quantity_blocks": 3,
+            "quantity_pieces": 30,
+            "scan_codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP",
+              "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ],
+            "scan_entries": [],
+            "scanned_blocks": 0,
+            "status": "new"
+          },
+          {
+            "id": "i-3",
+            "product": "",
+            "quantity_blocks": 0,
+            "scan_codes": []
+          }
+        ],
+        "order_date": "2026-10-03",
+        "payment_type": "Перечисление",
+        "representative": null,
+        "skladbot_request_id": "r-9",
+        "skladbot_request_number": "WH-R-9",
+        "status": "new"
+      },
+      "name": "order o-1",
+      "output": [
+        {
+          "address": "Ташкент",
+          "client": "ООО Тест",
+          "codes": [
+            "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "date": "03.10.2026",
+          "entries": [
+            {
+              "block_quantity": 50,
+              "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            }
+          ],
+          "item": "i-1",
+          "order": "o-1",
+          "payment": "Перечисление",
+          "plan": 60,
+          "product": "Chapman RED OP 20",
+          "representative": "",
+          "request": "WH-R-9",
+          "request_id": "r-9",
+          "total": 14400000
+        },
+        {
+          "address": "Ташкент",
+          "client": "ООО Тест",
+          "codes": [
+            "0104006396053947215ABCDEFGHIJKLMNOP",
+            "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          ],
+          "date": "03.10.2026",
+          "entries": [
+            {
+              "block_quantity": 1,
+              "code": "0104006396053947215ABCDEFGHIJKLMNOP"
+            },
+            {
+              "block_quantity": 50,
+              "code": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            }
+          ],
+          "item": "i-2",
+          "order": "o-1",
+          "payment": "Перечисление",
+          "plan": 3,
+          "product": "Chapman Brown OP 20",
+          "representative": "",
+          "request": "WH-R-9",
+          "request_id": "r-9",
+          "total": 0
+        },
+        {
+          "address": "Ташкент",
+          "client": "ООО Тест",
+          "codes": [],
+          "date": "03.10.2026",
+          "entries": [],
+          "item": "i-3",
+          "order": "o-1",
+          "payment": "Перечисление",
+          "plan": 0,
+          "product": "",
+          "representative": "",
+          "request": "WH-R-9",
+          "request_id": "r-9",
+          "total": 0
+        }
+      ]
+    },
+    {
+      "input": {
+        "address": "",
+        "client": "",
+        "id": "o-2",
+        "items": [
+          {
+            "id": "i-4",
+            "line_total": 480000,
+            "product": "Chapman Gold SSL",
+            "quantity_blocks": 2,
+            "scan_codes": []
+          }
+        ],
+        "order_date": null,
+        "payment_type": "",
+        "representative": "Иванов",
+        "skladbot_request_id": "",
+        "skladbot_request_number": ""
+      },
+      "name": "order o-2",
+      "output": [
+        {
+          "address": "",
+          "client": "",
+          "codes": [],
+          "date": "",
+          "entries": [],
+          "item": "i-4",
+          "order": "o-2",
+          "payment": "",
+          "plan": 2,
+          "product": "Chapman Gold SSL",
+          "representative": "Иванов",
+          "request": "",
+          "request_id": "",
+          "total": 480000
+        }
+      ]
+    }
+  ],
+  "scan": [
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_unit",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/2)",
+        "next_enabled": "",
+        "progress_text": "1 / 2",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/2)"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 50,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 12000000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_box",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "normal",
+        "last_code_text": "Последний код: короб +50: 0104006396053954215AAAAAAAAAAAAAAAAAAAAA...",
+        "message": "Отсканирован короб +50 (50/50)",
+        "next_enabled": "disabled",
+        "progress_text": "50 / 50",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ],
+        "state": "accepted",
+        "status_text": "🎯 Заказ выполнен! Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_last_block_last_position",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "normal",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/1)",
+        "next_enabled": "disabled",
+        "progress_text": "1 / 1",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "🎯 Заказ выполнен! Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          },
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-2",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_last_block_not_last_position",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "disabled",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/1)",
+        "next_enabled": "normal",
+        "progress_text": "1 / 1",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "🎯 Позиция выполнена! Нажмите 'Следующая позиция'"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Неизвестный товар",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_unknown_product",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP\r\n",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_trailing_line_break",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/2)",
+        "next_enabled": "",
+        "progress_text": "1 / 2",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/2)"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFG\u001dIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "accept_gs_code",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFG\u001dIJKLMNOP...",
+        "message": "Отсканирован код (1/2)",
+        "next_enabled": "",
+        "progress_text": "1 / 2",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/2)"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "   ",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "empty_after_trim",
+      "output": {
+        "bell": 0,
+        "entry_cleared": false,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "ignored",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": true
+      },
+      "name": "update_required",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Требуется обновить приложение перед сканированием",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [],
+        "scanned": [],
+        "update_required": true
+      },
+      "name": "update_required_before_position",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Требуется обновить приложение перед сканированием",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "no_rows",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Сначала выберите заказ",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "02111111111111111111111111111111111",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "format_prefix",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ должен начинаться с 01",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOPX",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "format_length",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Код длиной 36 не похож на марку (блок 35, короб 67)",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": true,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "blocked_code",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "🚫 Код маркировки заблокирован. Отгрузка запрещена",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": true,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 0,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "blocked_code_before_plan_check",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "🚫 Код маркировки заблокирован. Отгрузка запрещена",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": true,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "02123",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "blocked_lookup_after_format_check",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ должен начинаться с 01",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 0,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 0
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "plan_zero",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "В заказе не указано корректное 'Кол-во блок'",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053978215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 1,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 240000
+          }
+        ],
+        "scanned": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "update_required": false
+      },
+      "name": "plan_done",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "План выполнен! Нельзя сканировать больше 1 блоков",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053978215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 2,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 480000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "sku_mismatch",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ не соответствует товару текущей позиции.\nПозиция: Chapman RED OP 20\nОжидалось: RED OP\nКИЗ распознан как: Brown OP\nПрефикс КИЗа: 010400639605397821...\nВерсия приложения: 2.0.56\nЕсли SKU на блоке верный, закройте приложение и запустите обновленный TakSklad.exe.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396104236215BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 60,
+            "product": "Неизвестный товар",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 14400000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "box_wrong_product",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Код короба не соответствует товару текущей позиции",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 10,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 2400000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "box_exceeds_rest",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Короб +50 блоков превышает остаток позиции: осталось 10",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMN00",
+          "0104006396053947215ABCDEFGHIJKLMN01",
+          "0104006396053947215ABCDEFGHIJKLMN02",
+          "0104006396053947215ABCDEFGHIJKLMN03",
+          "0104006396053947215ABCDEFGHIJKLMN04",
+          "0104006396053947215ABCDEFGHIJKLMN05",
+          "0104006396053947215ABCDEFGHIJKLMN06",
+          "0104006396053947215ABCDEFGHIJKLMN07",
+          "0104006396053947215ABCDEFGHIJKLMN08",
+          "0104006396053947215ABCDEFGHIJKLMN09"
+        ],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053954215AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 55,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 13200000
+          }
+        ],
+        "scanned": [
+          "0104006396053947215ABCDEFGHIJKLMN00",
+          "0104006396053947215ABCDEFGHIJKLMN01",
+          "0104006396053947215ABCDEFGHIJKLMN02",
+          "0104006396053947215ABCDEFGHIJKLMN03",
+          "0104006396053947215ABCDEFGHIJKLMN04",
+          "0104006396053947215ABCDEFGHIJKLMN05",
+          "0104006396053947215ABCDEFGHIJKLMN06",
+          "0104006396053947215ABCDEFGHIJKLMN07",
+          "0104006396053947215ABCDEFGHIJKLMN08",
+          "0104006396053947215ABCDEFGHIJKLMN09"
+        ],
+        "update_required": false
+      },
+      "name": "box_exceeds_rest_partly_scanned",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Короб +50 блоков превышает остаток позиции: осталось 45",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMN00",
+          "0104006396053947215ABCDEFGHIJKLMN01",
+          "0104006396053947215ABCDEFGHIJKLMN02",
+          "0104006396053947215ABCDEFGHIJKLMN03",
+          "0104006396053947215ABCDEFGHIJKLMN04",
+          "0104006396053947215ABCDEFGHIJKLMN05",
+          "0104006396053947215ABCDEFGHIJKLMN06",
+          "0104006396053947215ABCDEFGHIJKLMN07",
+          "0104006396053947215ABCDEFGHIJKLMN08",
+          "0104006396053947215ABCDEFGHIJKLMN09"
+        ],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "update_required": false
+      },
+      "name": "same_position_duplicate",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Код уже отсканирован в этой позиции",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": false,
+          "latest_movement_type": "outbound"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_other_order_backend_refuses",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "return"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_other_order_backend_releases",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "outbound"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_backend_available_but_outbound",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": false,
+          "latest_movement_type": "return"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_backend_refuses_after_return",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор. Последнее движение: return\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": ""
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_backend_available_without_movement",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": false
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_backend_no_verdict",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "undo"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_released_by_undo",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "RETURN"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_released_by_upper_case_return",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": " Reset "
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_released_by_padded_reset",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": "error",
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_backend_check_failed",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend-проверка повтора недоступна: backend availability check failed\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "return"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFGHIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_position_without_backend_item",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend-проверка повтора недоступна: backend path is unavailable for this position\nКод: 0104006396053947215ABCDEFGHIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": false,
+          "latest_movement_type": "outbound"
+        },
+        "blocked": false,
+        "booked": [
+          "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+        ],
+        "completed": [],
+        "owner_rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Другой",
+            "codes": [
+              "0104006396053947215ABCDEFG\u001dIJKLMNOP"
+            ],
+            "date": "01.10.2026",
+            "entries": [],
+            "item": "item-owner",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 5,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-7",
+            "request_id": "",
+            "total": 1200000
+          }
+        ],
+        "raw": "0104006396053947215ABCDEFG\u001dIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_gs_code_other_order",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "КИЗ уже отсканирован в другом заказе.\nВладелец в локальном списке не найден.\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFG\u001dIJKLMNOP\nСканируйте другой КИЗ.",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": false,
+          "latest_movement_type": "outbound"
+        },
+        "blocked": false,
+        "booked": [],
+        "completed": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_completed_today",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Код уже использован в другом задании сегодня",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 1,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    },
+    {
+      "input": {
+        "availability": {
+          "available": true,
+          "latest_movement_type": "undo"
+        },
+        "blocked": false,
+        "booked": [],
+        "completed": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "item-1",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "duplicate_completed_released",
+      "output": {
+        "bell": 0,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "Последний код: 0104006396053947215ABCDEFGHIJKLMNOP...",
+        "message": "Отсканирован код (1/3)",
+        "next_enabled": "",
+        "progress_text": "1 / 3",
+        "queued": 1,
+        "release_prompt": 0,
+        "scanned_codes_after": [
+          "0104006396053947215ABCDEFGHIJKLMNOP"
+        ],
+        "state": "accepted",
+        "status_text": "✅ Отсканирован код (1/3)"
+      }
+    },
+    {
+      "input": {
+        "availability": null,
+        "blocked": false,
+        "booked": [],
+        "completed": [],
+        "owner_rows": [],
+        "raw": "0104006396053947215ABCDEFGHIJKLMNOP",
+        "rows": [
+          {
+            "address": "Ташкент, ул. Пример, 1",
+            "client": "ООО Тест",
+            "codes": [],
+            "date": "02.10.2026",
+            "entries": [],
+            "item": "",
+            "order": "order-1",
+            "payment": "Перечисление",
+            "plan": 3,
+            "product": "Chapman RED OP 20",
+            "representative": "Иванов",
+            "request": "WH-R-101",
+            "request_id": "",
+            "total": 720000
+          }
+        ],
+        "scanned": [],
+        "update_required": false
+      },
+      "name": "no_backend_item",
+      "output": {
+        "bell": 1,
+        "entry_cleared": true,
+        "finish_enabled": "",
+        "last_code_text": "",
+        "message": "Позиция не связана с backend. Сканирование заблокировано",
+        "next_enabled": "",
+        "progress_text": "",
+        "queued": 0,
+        "release_prompt": 0,
+        "scanned_codes_after": [],
+        "state": "rejected",
+        "status_text": ""
+      }
+    }
+  ],
+  "tables": {
+    "aggregate_block_quantity": 50,
+    "aggregate_prefixes": {
+      "0104006396053954": "red:op",
+      "0104006396053985": "brown:op",
+      "0104006396054012": "gold:ssl",
+      "0104006396054043": "red:ssl",
+      "0104006396054074": "brown:ssl",
+      "0104006396104205": "brown:kssl",
+      "0104006396104236": "green:kssl",
+      "0104006396104448": "green:op",
+      "0104006396104458": "green:op"
+    },
+    "product_key_labels": {
+      "brown:kssl": "Brown KSSL",
+      "brown:op": "Brown OP",
+      "brown:ssl": "Brown SSL",
+      "gold:ssl": "Gold SSL",
+      "green:kssl": "Green KSSL",
+      "green:op": "Green OP",
+      "red:op": "RED OP",
+      "red:ssl": "RED SSL"
+    },
+    "unit_prefixes": {
+      "0104006396053947": "red:op",
+      "0104006396053978": "brown:op",
+      "0104006396054005": "gold:ssl",
+      "0104006396054036": "red:ssl",
+      "0104006396054067": "brown:ssl",
+      "0104006396104199": "brown:kssl",
+      "0104006396104229": "green:kssl",
+      "0104006396104441": "green:op"
+    }
+  },
+  "text": {
+    "dates": [
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": 20728,
+        "standard": "02.10.2026",
+        "value": "02.10.2026"
+      },
+      {
+        "header": "Завтра, 03.10.2026",
+        "header_late": "Завтра, 03.10.2026",
+        "sort_day": 20729,
+        "standard": "03.10.2026",
+        "value": "03.10.2026"
+      },
+      {
+        "header": "Вчера, 01.10.2026",
+        "header_late": "Вчера, 01.10.2026",
+        "sort_day": 20727,
+        "standard": "01.10.2026",
+        "value": "01.10.2026"
+      },
+      {
+        "header": "04.10.2026",
+        "header_late": "04.10.2026",
+        "sort_day": 20730,
+        "standard": "04.10.2026",
+        "value": "04.10.2026"
+      },
+      {
+        "header": "05.10.2026",
+        "header_late": "05.10.2026",
+        "sort_day": 20731,
+        "standard": "05.10.2026",
+        "value": "2026-10-05"
+      },
+      {
+        "header": "05.10.2026",
+        "header_late": "05.10.2026",
+        "sort_day": null,
+        "standard": "05.10.2026",
+        "value": "05/10/2026"
+      },
+      {
+        "header": "Без",
+        "header_late": "Без",
+        "sort_day": null,
+        "standard": "Без",
+        "value": "Без даты"
+      },
+      {
+        "header": "Без даты отгрузки",
+        "header_late": "Без даты отгрузки",
+        "sort_day": null,
+        "standard": null,
+        "value": ""
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "'02.10.2026'"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "02.10.2026 10:00"
+      },
+      {
+        "header": "01.02.2026",
+        "header_late": "01.02.2026",
+        "sort_day": 20485,
+        "standard": "01.02.2026",
+        "value": "1.2.2026"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "02.10.26"
+      },
+      {
+        "header": "69.01.01",
+        "header_late": "69.01.01",
+        "sort_day": null,
+        "standard": "69.01.01",
+        "value": "69.01.01"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "2026.10.02"
+      },
+      {
+        "header": "30.02.2026",
+        "header_late": "30.02.2026",
+        "sort_day": null,
+        "standard": "30.02.2026",
+        "value": "30.02.2026"
+      },
+      {
+        "header": "29.02.2024",
+        "header_late": "29.02.2024",
+        "sort_day": 19782,
+        "standard": "29.02.2024",
+        "value": "29.02.2024"
+      },
+      {
+        "header": "13.10.2026",
+        "header_late": "13.10.2026",
+        "sort_day": null,
+        "standard": "13.10.2026",
+        "value": "13/10/2026"
+      },
+      {
+        "header": "13.10.2026",
+        "header_late": "13.10.2026",
+        "sort_day": null,
+        "standard": "13.10.2026",
+        "value": "10/13/2026"
+      },
+      {
+        "header": "0.10.2026",
+        "header_late": "0.10.2026",
+        "sort_day": null,
+        "standard": "0.10.2026",
+        "value": "0.10.2026"
+      },
+      {
+        "header": "32.10.2026",
+        "header_late": "32.10.2026",
+        "sort_day": null,
+        "standard": "32.10.2026",
+        "value": "32.10.2026"
+      },
+      {
+        "header": "01.13.2026",
+        "header_late": "01.13.2026",
+        "sort_day": null,
+        "standard": "01.13.2026",
+        "value": "01.13.2026"
+      },
+      {
+        "header": "00.00.0000",
+        "header_late": "00.00.0000",
+        "sort_day": null,
+        "standard": "00.00.0000",
+        "value": "00.00.0000"
+      },
+      {
+        "header": "02.10.2026x",
+        "header_late": "02.10.2026x",
+        "sort_day": null,
+        "standard": "02.10.2026x",
+        "value": "02.10.2026x"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": 20728,
+        "standard": "02.10.2026",
+        "value": " 02.10.2026 "
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": 20728,
+        "standard": "02.10.2026",
+        "value": "\u001d02.10.2026"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "'02.10.2026"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": null,
+        "standard": "02.10.2026",
+        "value": "\"\"02.10.2026\"\""
+      },
+      {
+        "header": "02.10.2026\t10:00",
+        "header_late": "02.10.2026\t10:00",
+        "sort_day": null,
+        "standard": "02.10.2026\t10:00",
+        "value": "02.10.2026\t10:00"
+      },
+      {
+        "header": "Сегодня, 02.10.2026",
+        "header_late": "Сегодня, 02.10.2026",
+        "sort_day": 20728,
+        "standard": "02.10.2026",
+        "value": "2026-10-2"
+      },
+      {
+        "header": "02.10.1969",
+        "header_late": "02.10.1969",
+        "sort_day": null,
+        "standard": "02.10.1969",
+        "value": "02.10.69"
+      },
+      {
+        "header": "02.10.2068",
+        "header_late": "02.10.2068",
+        "sort_day": null,
+        "standard": "02.10.2068",
+        "value": "02.10.68"
+      },
+      {
+        "header": "01.01.1999",
+        "header_late": "01.01.1999",
+        "sort_day": null,
+        "standard": "01.01.1999",
+        "value": "1.1.99"
+      },
+      {
+        "header": "01.01.2026",
+        "header_late": "01.01.2026",
+        "sort_day": 20454,
+        "standard": "01.01.2026",
+        "value": "2026-1-1"
+      },
+      {
+        "header": "01.01.0001",
+        "header_late": "01.01.0001",
+        "sort_day": -719162,
+        "standard": "01.01.0001",
+        "value": "0001-01-01"
+      },
+      {
+        "header": "0000-01-01",
+        "header_late": "0000-01-01",
+        "sort_day": null,
+        "standard": "0000-01-01",
+        "value": "0000-01-01"
+      },
+      {
+        "header": "'",
+        "header_late": "'",
+        "sort_day": null,
+        "standard": null,
+        "value": "'"
+      },
+      {
+        "header": "x",
+        "header_late": "x",
+        "sort_day": null,
+        "standard": "x",
+        "value": "x y"
+      },
+      {
+        "header": "0",
+        "header_late": "0",
+        "sort_day": null,
+        "standard": "0",
+        "value": 0
+      },
+      {
+        "header": "0",
+        "header_late": "0",
+        "sort_day": null,
+        "standard": "0",
+        "value": "0"
+      },
+      {
+        "header": "Без даты отгрузки",
+        "header_late": "Без даты отгрузки",
+        "sort_day": null,
+        "standard": null,
+        "value": null
+      }
+    ],
+    "ints": [
+      {
+        "result": 1000,
+        "value": "1_000"
+      },
+      {
+        "result": 0,
+        "value": "1__0"
+      },
+      {
+        "result": 0,
+        "value": "_1"
+      },
+      {
+        "result": 1000,
+        "value": "1e3"
+      },
+      {
+        "result": 1000,
+        "value": "1E3"
+      },
+      {
+        "result": 1000,
+        "value": "1e+3"
+      },
+      {
+        "result": -1000,
+        "value": "-1e3"
+      },
+      {
+        "result": 0,
+        "value": "1e-3"
+      },
+      {
+        "result": 5,
+        "value": "+5"
+      },
+      {
+        "result": -5,
+        "value": "-5.9"
+      },
+      {
+        "result": 5,
+        "value": "5."
+      },
+      {
+        "result": 0,
+        "value": ".5"
+      },
+      {
+        "result": 1,
+        "value": "1,5"
+      },
+      {
+        "result": 0,
+        "value": "1,234,5"
+      },
+      {
+        "result": 0,
+        "value": "1.2.3"
+      },
+      {
+        "result": 0,
+        "value": "--1"
+      },
+      {
+        "result": 0,
+        "value": "1e"
+      },
+      {
+        "result": 0,
+        "value": "e5"
+      },
+      {
+        "result": 1200,
+        "value": "1 200,7"
+      },
+      {
+        "result": 0,
+        "value": "inf"
+      },
+      {
+        "result": 0,
+        "value": "nan"
+      },
+      {
+        "result": 0,
+        "value": "1e400"
+      },
+      {
+        "result": 0,
+        "value": "0x10"
+      },
+      {
+        "result": 7,
+        "value": "  7 "
+      },
+      {
+        "result": 0,
+        "value": "1\t000"
+      },
+      {
+        "result": 0,
+        "value": "-0.5"
+      },
+      {
+        "result": 2,
+        "value": 2.7
+      },
+      {
+        "result": -2,
+        "value": -2.7
+      },
+      {
+        "result": 0,
+        "value": -0.2
+      },
+      {
+        "result": 0,
+        "value": {
+          "float": "NaN"
+        }
+      },
+      {
+        "result": 0,
+        "value": {
+          "float": "Infinity"
+        }
+      },
+      {
+        "result": 100000000000000000000,
+        "value": 100000000000000000000
+      },
+      {
+        "result": 0,
+        "value": ""
+      },
+      {
+        "result": 0,
+        "value": null
+      },
+      {
+        "result": 0,
+        "value": "abc"
+      },
+      {
+        "result": 0,
+        "value": "12abc"
+      }
+    ],
+    "lookup": [
+      {
+        "result": "елка ооо",
+        "value": "  Ёлка: ООО*  "
+      },
+      {
+        "result": "ab c",
+        "value": "A\ufeffB  C"
+      },
+      {
+        "result": "x",
+        "value": "\u001dX\u001d"
+      },
+      {
+        "result": "wh-r-12",
+        "value": "WH-R-12 "
+      },
+      {
+        "result": "a b",
+        "value": "a\u00a0b"
+      },
+      {
+        "result": "тест тест",
+        "value": "ТЕСТ тест"
+      },
+      {
+        "result": "тест тест",
+        "value": "ТЕСТ\u2028тест"
+      }
+    ],
+    "money": [
+      {
+        "text": "сумма не указана",
+        "value": 0
+      },
+      {
+        "text": "240 000 сум",
+        "value": 240000
+      },
+      {
+        "text": "1 234 567 сум",
+        "value": 1234567
+      },
+      {
+        "text": "1 200 000 сум",
+        "value": "1 200 000"
+      },
+      {
+        "text": "сумма не указана",
+        "value": "abc"
+      },
+      {
+        "text": "сумма не указана",
+        "value": -5
+      },
+      {
+        "text": "999 сум",
+        "value": 999
+      },
+      {
+        "text": "1 200 сум",
+        "value": "1 200,7"
+      }
+    ],
+    "sorted": {
+      "result": [
+        "",
+        "WH-R-10",
+        "WH-R-9",
+        "ab",
+        "abc",
+        "abd",
+        "Ёж",
+        "Я",
+        "а",
+        "я",
+        "Ａ",
+        "😀"
+      ],
+      "values": [
+        "abd",
+        "abc",
+        "ab",
+        "",
+        "а",
+        "Я",
+        "я",
+        "😀",
+        "Ａ",
+        "Ёж",
+        "WH-R-9",
+        "WH-R-10"
+      ]
+    },
+    "strip": [
+      {
+        "result": "x",
+        "value": "\u001dx\u001d"
+      },
+      {
+        "result": "\ufeffx",
+        "value": "\ufeffx"
+      },
+      {
+        "result": "x",
+        "value": "\u0085x\u0085"
+      },
+      {
+        "result": "x",
+        "value": "\u00a0x\u00a0"
+      },
+      {
+        "result": "x",
+        "value": "\u3000x"
+      },
+      {
+        "result": "plain",
+        "value": "  plain  "
+      },
+      {
+        "result": "",
+        "value": 0
+      },
+      {
+        "result": "",
+        "value": null
+      },
+      {
+        "result": "0",
+        "value": "0"
+      }
+    ]
+  },
+  "today": "2026-10-02T09:00:00",
+  "today_late": "2026-10-02T23:59:59"
+}
