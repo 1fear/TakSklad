@@ -29,7 +29,7 @@ def parse_warehouse_cidrs(values) -> tuple:
     networks = []
     for raw in values or ():
         try:
-            network = ipaddress.ip_network(str(raw).strip(), strict=False)
+            network = ipaddress.ip_network(str(raw).strip(), strict=True)
         except ValueError:
             logging.error("TAKSKLAD_WAREHOUSE_CIDRS содержит битое значение, станция выключена")
             return ()

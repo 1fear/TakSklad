@@ -29,6 +29,7 @@ class StationNetworkParsingTests(unittest.TestCase):
             ["192.168.1.0/24"],
             ["127.0.0.1"],
             ["not-a-network"],
+            [f"{WAREHOUSE_IP}/24"],
             [f"{WAREHOUSE_IP}/32", "10.0.0.0/8"],
         ):
             with self.subTest(values=values):
