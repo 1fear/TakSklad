@@ -32,14 +32,8 @@ describe("position screen and party summary", () => {
   });
 });
 
-// approved deviation (GS ruling): the desktop counts a code with GS inside twice and calls the position done, the station does not
-const GS_DEVIATIONS = new Map([["gs_code_counts_once", 0]]);
-
 describe("first incomplete position", () => {
-  it.each(labelled(corpus.first_incomplete, (item) => item.name))("%s", (name, { input, output }) => {
-    const station = GS_DEVIATIONS.get(name);
-    // the corpus keeps the desktop answer, so a deviation that the desktop later fixes shows up here
-    if (station !== undefined) expect(output.index).not.toBe(station);
-    expect(firstIncompleteIndex(input.rows.map(rowFromSpec))).toBe(station ?? output.index);
+  it.each(labelled(corpus.first_incomplete, (item) => item.name))("%s", (_name, { input, output }) => {
+    expect(firstIncompleteIndex(input.rows.map(rowFromSpec))).toBe(output.index);
   });
 });

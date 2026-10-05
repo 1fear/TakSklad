@@ -1079,6 +1079,32 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertNotIn("Сканируйте другой код", message)
         self.assertNotIn("Backend HTTP", message)
 
+    def test_kiz_format_rejection_tells_operator_to_rescan_the_block(self):
+        """Сервер не принял код как марку: тот же блок сканируется заново.
+
+        Совет «сканируйте другой код» тут неверен, блок исправен, плох
+        считанный код, поэтому текст называет длину и просит повторить скан.
+        """
+        message = format_backend_blocked_scan_message([
+            {
+                "type": "scan",
+                "payload": {"code": "010400639605394721ABCDEFG93HIJKLMN"},
+                "last_error": "Backend HTTP 422: Code length matches neither a block (35) nor a box (67)",
+                "last_error_detail": {
+                    "code": "kiz_format_invalid",
+                    "message": "Code length matches neither a block (35) nor a box (67)",
+                    "rule": "length",
+                    "length": 34,
+                },
+            }
+        ])
+
+        self.assertEqual(
+            message,
+            "Код длиной 34 не похож на марку (блок 35, короб 67) и убран из позиции. "
+            "Отсканируйте блок ещё раз: 010400639605394721ABCDEF...",
+        )
+
     def test_scan_product_mismatch_message_includes_runtime_diagnostics(self):
         message = format_scan_product_mismatch_message(
             "0104006396054067-TEST-BROWN-SSLXXXX",

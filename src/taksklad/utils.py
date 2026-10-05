@@ -95,7 +95,9 @@ def split_codes(codes_str):
     if not codes_str:
         return []
     codes = []
-    for line in str(codes_str).splitlines():
+    # Только настоящие переносы строки: str.splitlines() режет и по GS (\x1d),
+    # а GS законно стоит внутри марки, и обрезанный код уходил на сервер новым сканом
+    for line in re.split(r"\r\n|\r|\n", str(codes_str)):
         code = normalize_kiz_code(line)
         if code:
             codes.append(code)

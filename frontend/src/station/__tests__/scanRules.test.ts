@@ -10,7 +10,6 @@ import { evaluateScan, findCodeOwner, formatDuplicateScanMessage, type ScanDeps,
 import { corpus, labelled, rowFromSpec, type RowSpec } from "./support";
 
 const VERSION = "2.0.56";
-const NO_OWNER = "Владелец в локальном списке не найден.";
 
 type ScanCase = {
   name: string;
@@ -39,13 +38,6 @@ type ScanCase = {
     release_prompt: number;
   };
 };
-
-// approved deviation (GS ruling): the desktop splits the code text and cannot find the holder of a code with GS inside
-const GS_OWNER_FOUND = new Set(["duplicate_gs_code_other_order"]);
-
-function ownerLines({ client, date, product, request }: RowSpec): string {
-  return [`Заказ: ${client}`, `Дата отгрузки: ${date}`, `Товар: ${product}`, `SkladBot: ${request}`].map((line) => `${line}\n`).join("");
-}
 
 const cases = corpus.scan as unknown as ScanCase[];
 
@@ -85,9 +77,6 @@ describe("scan answers", () => {
       // approved deviation: the last two lines name the site, not the desktop program
       expect(lines.slice(0, 5)).toEqual(output.message.split("\n").slice(0, 5));
       expect(lines.slice(5)).toEqual([`Версия сайта: ${VERSION}`, "Если SKU на блоке верный, обновите страницу (F5)."]);
-    } else if (GS_OWNER_FOUND.has(name)) {
-      expect(output.message).toContain(NO_OWNER);
-      expect(result.message).toBe(output.message.replace(`${NO_OWNER}\n`, ownerLines(input.owner_rows[0])));
     } else {
       expect(result.message).toBe(output.message);
     }
@@ -146,19 +135,12 @@ describe("what only the page does", () => {
 
 describe("code owner", () => {
   type Held = { client: string; date: string; product: string; request: string };
-  // approved deviation (GS ruling): the desktop finds nobody for a code with GS inside, the station finds its holder
-  const GS_FOUND: Record<string, Held> = {
-    gs_code: { client: "ООО Другой", date: "01.10.2026", product: "Chapman RED OP 20", request: "WH-R-7" },
-  };
 
   it.each(labelled(corpus.owners as unknown as { name: string; input: { code: string; rows: RowSpec[] }; output: Held | null }[], (item) => item.name))(
     "%s",
-    (name, { input, output }) => {
-      const found = GS_FOUND[name];
-      if (found) expect(output).toBeNull();
-      const expected = found ?? output;
+    (_name, { input, output }) => {
       expect(findCodeOwner(input.code, input.rows.map(rowFromSpec))).toEqual(
-        expected && { client: expected.client, orderDate: expected.date, product: expected.product, requestNumber: expected.request },
+        output && { client: output.client, orderDate: output.date, product: output.product, requestNumber: output.request },
       );
     },
   );
