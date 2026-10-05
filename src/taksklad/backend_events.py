@@ -273,7 +273,13 @@ def is_duplicate_scan_ack(exc):
 
 
 def is_non_retryable_scan_conflict(exc):
-    if not isinstance(exc, BackendApiError) or exc.status_code != 409:
+    if not isinstance(exc, BackendApiError):
+        return False
+    if exc.status_code == 422:
+        # Формат кода сервер отбивает 422, а не 409: тот же код не пройдёт
+        # никогда, а событие в очереди держало заказ незакрытым
+        return backend_error_code(exc) == "kiz_format_invalid"
+    if exc.status_code != 409:
         return False
     code = backend_error_code(exc)
     if code == SCAN_DUPLICATE_ACK_CODE:

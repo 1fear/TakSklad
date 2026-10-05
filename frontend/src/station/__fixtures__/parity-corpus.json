@@ -445,7 +445,7 @@
       },
       "name": "gs_code_counts_once",
       "output": {
-        "index": 1
+        "index": 0
       }
     },
     {
@@ -2341,7 +2341,12 @@
         ]
       },
       "name": "gs_code",
-      "output": null
+      "output": {
+        "client": "ООО Другой",
+        "date": "01.10.2026",
+        "product": "Chapman RED OP 20",
+        "request": "WH-R-7"
+      }
     }
   ],
   "palette": {
@@ -5721,7 +5726,7 @@
         "entry_cleared": true,
         "finish_enabled": "",
         "last_code_text": "",
-        "message": "КИЗ уже отсканирован в другом заказе.\nВладелец в локальном списке не найден.\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFG\u001dIJKLMNOP\nСканируйте другой КИЗ.",
+        "message": "КИЗ уже отсканирован в другом заказе.\nЗаказ: ООО Другой\nДата отгрузки: 01.10.2026\nТовар: Chapman RED OP 20\nSkladBot: WH-R-7\nBackend не разрешил повтор. Последнее движение: outbound\nКод: 0104006396053947215ABCDEFG\u001dIJKLMNOP\nСканируйте другой КИЗ.",
         "next_enabled": "",
         "progress_text": "",
         "queued": 0,

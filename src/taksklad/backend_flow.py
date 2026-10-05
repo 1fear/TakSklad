@@ -12,6 +12,7 @@ from .backend_events import (
     queue_backend_order_complete,
     remove_pending_backend_order_complete,
 )
+from .config import KIZ_BOX_LENGTH, KIZ_UNIT_LENGTH
 from .desktop_scan_rules import (
     format_duplicate_scan_message,
     format_scan_product_mismatch_message,
@@ -110,6 +111,13 @@ def format_backend_blocked_scan_message(blocked_events):
         )
     if "exceeds remaining order item blocks" in detail:
         return f"Код короба превышает остаток позиции{suffix}"
+    if normalize_text(detail_payload.get("code")) == "kiz_format_invalid":
+        # Блок исправен, плохо считан код, поэтому скан того же блока, а не другого
+        length = detail_payload.get("length") or len(code)
+        return (
+            f"Код длиной {length} не похож на марку (блок {KIZ_UNIT_LENGTH}, короб {KIZ_BOX_LENGTH}) "
+            f"и убран из позиции. Отсканируйте блок ещё раз{suffix}"
+        )
     if (
         normalize_text(detail_payload.get("code")) == "order_item_fully_scanned_new_code"
         or "already fully scanned" in detail

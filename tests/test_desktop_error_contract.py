@@ -155,6 +155,53 @@ class DesktopErrorContractTests(unittest.TestCase):
         )
         record.assert_called_once_with(result["blocked_events"])
 
+    def test_real_backend_kiz_format_rejection_is_terminal_in_queue(self):
+        # 05.10.2026 станция 55 раз за 8 минут повторила код длиной 34: сервер
+        # отвечает на формат 422, а не 409, и событие оставалось в очереди
+        # навсегда, хотя kiz_format_invalid числится неповторяемым
+        create = ScanCreate.model_construct(
+            order_item_id=str(uuid.uuid4()),
+            code="010400639605394721ABCDEFG93HIJKLMN",
+            workstation_id=None,
+            scanned_by=None,
+            scanned_at=None,
+            raw_payload={},
+        )
+        with self.assertRaises(orders_service.ApiError) as raised:
+            orders_service.create_scan(None, create)
+        server_error = raised.exception
+        exc = BackendApiError(
+            format_backend_error(server_error.status_code, server_error.detail),
+            status_code=server_error.status_code,
+            detail=server_error.detail,
+        )
+
+        result, saved, record = self.sync_scan_error(exc)
+
+        self.assertEqual(exc.status_code, 422)
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+        self.assertEqual(result["blocked_events"][0]["last_error_detail"]["code"], "kiz_format_invalid")
+        record.assert_called_once_with(result["blocked_events"])
+
+    def test_unrelated_422_stays_in_queue(self):
+        exc = BackendApiError(
+            "Backend HTTP 422",
+            status_code=422,
+            detail=[{"loc": ["body", "order_item_id"], "msg": "field required"}],
+        )
+
+        result, saved, record = self.sync_scan_error(exc)
+
+        self.assertFalse(backend_events.is_non_retryable_scan_conflict(exc))
+        self.assertEqual(result["blocked"], 0)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["remaining"], 1)
+
     def test_ack_code_without_legacy_marker_is_synced_and_not_blocked(self):
         exc = conflict_error(detail={
             "code": "scan_duplicate_ack",
