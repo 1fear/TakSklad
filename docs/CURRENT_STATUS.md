@@ -8,7 +8,7 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
-## Дельта 2026-10-08, ночь: `/ready` разобран, старые инциденты закрыты, сторожа #206 (#208)
+## Дельта 2026-10-08, ночь: `/ready` 200, старые инциденты закрыты, сторожа #206 (#208) и контейнеров (#210)
 
 - Сверка 07.10.2026 с 19:00 по 19:40 UTC: `docker ps -a`, `/version`, `/health`, `/ready` изнутри
   `backend-api`, журналы четырёх сервисов, журнал traefik, `pending_events`, `incidents`, `audit_log`
@@ -34,12 +34,21 @@ DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 - На бою весь backend `local-0ff9618`, frontend `local-81fcc66`, пять сервисов `healthy`, ошибок в журналах
   за час 0, 5xx TakSklad в traefik за сутки 0
 
-### Открыто на 08.10
+### Закрыто той же ночью
 
-- Дейли SkladBot за 03.09: отправить клиенту с опозданием или закрыть инцидентом как неактуальный
-- Оповещения о `unhealthy` нет: правила `monitoring/observability/alert-rules.json` ведут в
-  `local-jsonl://temporary`, сторожа контейнеров у TakSklad нет; 13.09 владелец просил убрать
-  оповещения сторожей сервера из Telegram, поэтому включение ждёт его решения
+- Дейли SkladBot за 03.09 закрыт по прецеденту 14.07 (`phase27_historical_daily_report_recovery`,
+  «Not resent to prevent stale or duplicate external delivery»): инцидент `historical_daily_report_ack`
+  `resolved`, клиенту задним числом не переотправлялся; пробный прогон исполнил ветку записи в
+  откатываемой транзакции; после этого `/ready` 200 `ok`, блокирующих падений 0 впервые с 03.09
+- #210 влит как `5ea1c83`: сторож `deploy/vds/container_health_check.sh` раз в 10 минут проверяет
+  шесть сервисов проекта `vds` и `/ready` изнутри `backend-api`; находку (код 2) и сбой сторожа
+  пишет общий обработчик хоста `/opt/ops/alert_on_failure.sh` в `/var/log/wms-alerts`, в Telegram не
+  уходит (решение владельца 13.09 складывать отказы сторожей на сервере, сводка
+  `/opt/ops/wms/alerts-digest.sh`); `WMS_ALERT_TELEGRAM_UNITS` пуст
+- Установлен на хост `install_container_health_timer.sh` 07.10 в 19:47 UTC: живой прогон
+  `CONTAINER_HEALTH_OK project=vds services=6`, юнит `Result=success`; живая отрицательная проверка
+  с лишним сервисом дала `FINDING service_missing=no-such-service` и код 2; откат в шапке установщика
+- Тесты на ветке #210: Python 2284 `OK`; контроль со сломанной проверкой `/ready` красный
 
 ## Дельта 2026-10-07: backend `0ff9618` (#206) на бою, smartup-воркер снова healthy
 
