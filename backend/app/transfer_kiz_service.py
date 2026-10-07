@@ -6,7 +6,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import ImportJob, OrderItem, PendingEvent, ScanCode
@@ -179,8 +179,13 @@ def transfer_kiz_delivery_readiness(db: Session, source_key: str) -> dict:
 
 
 def _exact_import_file_items(db: Session, import_id: str, source_file: str) -> list[OrderItem]:
+    # Отбор по файлу идёт в SQL: без него каждая проверка после скана грузила
+    # все строки заказов со сканами, и очередь проверок держала отправку часами
     candidates = db.execute(
-        select(OrderItem).options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
+        select(OrderItem)
+        .options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
+        .where(func.trim(OrderItem.raw_payload["backend_import_id"].as_string()) == import_id)
+        .where(func.trim(OrderItem.raw_payload["source_file"].as_string()) == source_file)
     ).scalars().all()
     return [
         item for item in candidates

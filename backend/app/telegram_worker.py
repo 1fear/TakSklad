@@ -541,6 +541,9 @@ class TelegramWorker:
         if updates:
             self.save_offset()
         if self.__dict__.get("_poll_processors_ready"):
+            # Готовая отправка не ждёт хвоста проверок: каждый скан ставит свою,
+            # и при большой очереди файл клиенту уходил только после неё
+            self.process_pending_transfer_kiz_deliveries()
             self.process_pending_transfer_kiz_completions()
             self.process_pending_transfer_kiz_deliveries()
         self.process_queued_telegram_imports()
