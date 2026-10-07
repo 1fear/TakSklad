@@ -1,0 +1,16 @@
+[Unit]
+Description=TakSklad container and readiness health check
+# Сбой самого сторожа (код 1) и находка (код 2) пишутся в общий журнал отказов хоста тем же
+# обработчиком, что у WMS и voicebot; в Telegram не уходят, пока юнит не назван
+# в WMS_ALERT_TELEGRAM_UNITS (решение владельца 13.09.2026)
+OnFailure=wms-alert@taksklad-container-health.service
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/stacks/taksklad/app/deploy/vds/container_health_check.sh
+# Код 2 это штатный исход «проверка отработала, есть находки»: юнит остаётся успешным,
+# а находку записывает ExecStopPost
+SuccessExitStatus=2
+ExecStopPost=/bin/sh -c 'test "$EXIT_STATUS" = "2" && /opt/ops/alert_on_failure.sh %N || true'
