@@ -12,6 +12,7 @@ from backend.app.transfer_kiz_service import (
     process_transfer_kiz_completion_check,
     queue_transfer_kiz_client_delivery,
     queue_transfer_kiz_undo_alert,
+    transfer_kiz_delivery_readiness,
     transfer_kiz_source_key,
 )
 
@@ -125,6 +126,27 @@ class TransferKizServiceTests(unittest.TestCase):
         self.assertNotEqual(first["source_key"], second["source_key"])
         self.assertEqual(len(deliveries), 2)
         self.assertEqual({event.payload["source_key"] for event in deliveries}, {first["source_key"], second["source_key"]})
+
+    def test_readiness_reads_only_items_of_its_own_file(self):
+        ready_event_id = self._seed_ready_check(source_file="ready.xlsx")
+        self._seed_ready_check(source_file="other.xlsx", scanned_blocks=0)
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, ready_event_id)
+            scan = db.get(ScanCode, uuid.UUID(event.payload["scan_id"]))
+            item = db.get(OrderItem, scan.order_item_id)
+            item_id = item.id
+            # Пробелы вокруг значений в raw_payload не должны выбивать строку из файла
+            item.raw_payload = {
+                "backend_import_id": f" {item.raw_payload['backend_import_id']} ",
+                "source_file": " ready.xlsx ",
+            }
+            db.commit()
+            result = process_transfer_kiz_completion_check(db, db.get(PendingEvent, ready_event_id))
+            readiness = transfer_kiz_delivery_readiness(db, result["source_key"])
+            readiness_item_ids = [entry.id for entry in readiness["items"]]
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(readiness_item_ids, [item_id])
 
     def test_undo_after_completed_delivery_queues_one_generic_admin_alert(self):
         event_id = self._seed_ready_check()
