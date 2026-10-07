@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.models import Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.telegram_clients import TelegramProcessorPorts
 from backend.app.telegram_transfer_kiz_processor import TelegramTransferKizProcessor
+from backend.app.telegram_worker import TelegramWorker
 from backend.app.transfer_kiz_service import (
     TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE,
     transfer_kiz_source_key,
@@ -214,6 +215,31 @@ class TransferKizDeliveryTests(unittest.TestCase):
     def _notification_events(self):
         with self.SessionLocal() as db:
             return db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all()
+
+
+class TelegramWorkerTransferKizOrderTests(unittest.TestCase):
+    def test_poll_sends_ready_delivery_before_completion_checks(self):
+        # Сторож #206: каждый скан ставит проверку, и при длинной очереди проверок
+        # готовый файл КИЗ уходил клиенту только после неё; отправка идёт первой
+        worker = TelegramWorker.__new__(TelegramWorker)
+        calls = []
+        worker.token = "synthetic-token"
+        worker.poll_timeout = 5
+        worker.timeout = 10
+        worker.offset = 0
+        worker._poll_processors_ready = True
+        worker.probe_backend_identity = lambda: None
+        worker.ensure_bot_menu = lambda: None
+        worker.poll_updates = lambda offset, timeout: []
+        worker.process_pending_transfer_kiz_deliveries = lambda: calls.append("deliveries")
+        worker.process_pending_transfer_kiz_completions = lambda: calls.append("completions")
+        worker.process_queued_telegram_imports = lambda: None
+        worker.process_pending_telegram_notifications = lambda: None
+        worker.send_due_skladbot_daily_reports = lambda: None
+
+        worker.poll_once()
+
+        self.assertEqual(calls, ["deliveries", "completions", "deliveries"])
 
 
 if __name__ == "__main__":

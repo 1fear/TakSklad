@@ -1,7 +1,7 @@
 import unittest
 import uuid
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event as sa_event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -147,6 +147,34 @@ class TransferKizServiceTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ready")
         self.assertEqual(readiness_item_ids, [item_id])
+
+    def test_readiness_does_not_load_items_of_other_files(self):
+        # Сторож скорости #206: проверка после каждого скана не должна поднимать из базы
+        # строки чужих файлов, иначе на проде она снова займёт секунды на всю таблицу
+        ready_event_id = self._seed_ready_check(source_file="ready.xlsx")
+        for index in range(3):
+            self._seed_ready_check(source_file=f"other-{index}.xlsx")
+        with self.SessionLocal() as db:
+            check_event = db.get(PendingEvent, ready_event_id)
+            scan = db.get(ScanCode, uuid.UUID(check_event.payload["scan_id"]))
+            item = db.get(OrderItem, scan.order_item_id)
+            own_item_id = item.id
+            source_key = transfer_kiz_source_key(item.raw_payload["backend_import_id"], "ready.xlsx")
+
+        loaded_item_ids = []
+
+        def record_load(target, _context):
+            loaded_item_ids.append(target.id)
+
+        sa_event.listen(OrderItem, "load", record_load)
+        try:
+            with self.SessionLocal() as db:
+                readiness = transfer_kiz_delivery_readiness(db, source_key)
+        finally:
+            sa_event.remove(OrderItem, "load", record_load)
+
+        self.assertEqual([entry.id for entry in readiness["items"]], [own_item_id])
+        self.assertEqual(loaded_item_ids, [own_item_id])
 
     def test_undo_after_completed_delivery_queues_one_generic_admin_alert(self):
         event_id = self._seed_ready_check()
