@@ -17,6 +17,7 @@ from backend.app.telegram_transfer_kiz_processor import TelegramTransferKizProce
 from backend.app.telegram_worker import TelegramWorker
 from backend.app.transfer_kiz_service import (
     TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE,
+    TRANSFER_KIZ_COMPLETION_CHECK_EVENT_TYPE,
     transfer_kiz_source_key,
 )
 
@@ -171,6 +172,39 @@ class TransferKizDeliveryTests(unittest.TestCase):
             datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=60),
         )
         self.assertEqual(self._notification_events(), [])
+
+    def test_failed_completion_check_waits_before_next_try(self):
+        # Упавшая проверка готовности забиралась снова в том же проходе, и при стабильной
+        # ошибке цикл воркера крутил её без конца, не доходя до отправок и уведомлений
+        event_id = uuid.uuid4()
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                id=event_id, event_type=TRANSFER_KIZ_COMPLETION_CHECK_EVENT_TYPE,
+                idempotency_key=f"transfer-kiz:check:test:{event_id}", status="pending", payload={},
+            ))
+            db.commit()
+        failures = {"left": 3}
+
+        def fail_three_times(_db, _event):
+            if failures["left"]:
+                failures["left"] -= 1
+                raise RuntimeError("synthetic check failure")
+
+        with mock.patch(
+            "backend.app.telegram_transfer_kiz_processor.process_transfer_kiz_completion_check",
+            side_effect=fail_three_times,
+        ):
+            processed = self.processor.process_pending_transfer_kiz_completions()
+
+        with self.SessionLocal() as db:
+            check = db.get(PendingEvent, event_id)
+        self.assertEqual(processed, 1)
+        self.assertEqual(check.attempts, 1)
+        self.assertEqual(check.status, "failed")
+        self.assertGreater(
+            check.available_at.replace(tzinfo=None),
+            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=60),
+        )
 
     def test_ambiguous_send_blocks_without_retry_and_queues_one_admin_alert(self):
         self._seed_delivery()

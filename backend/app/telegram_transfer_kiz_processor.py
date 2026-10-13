@@ -141,6 +141,9 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
             event.last_error = _safe_error(error)
             event.lease_owner = None
             event.lease_expires_at = None
+            # Без паузы проход сразу забирал упавшую проверку снова и при стабильной
+            # ошибке не выходил из цикла
+            event.available_at = datetime.now(timezone.utc) + TRANSFER_KIZ_RETRY_DELAY
             db.commit()
 
     def _deliver(self, event_id, owner):
