@@ -129,15 +129,20 @@ def queue_transfer_kiz_undo_alert(db: Session, *, item: OrderItem) -> PendingEve
     if not import_id or not source_file:
         return None
     source_key = transfer_kiz_source_key(import_id, source_file)
+    # После ручной переотправки у файла несколько завершённых доставок, и прежний
+    # scalar_one_or_none ронял отмену скана; алерт опирается на последнюю отправку
     delivery = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE)
         .where(PendingEvent.aggregate_id == source_key)
         .where(PendingEvent.status == "completed")
+        .order_by(func.coalesce(PendingEvent.completed_at, PendingEvent.created_at).desc(), PendingEvent.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
     if delivery is None:
         return None
-    key = _source_idempotency_key("telegram:notification:transfer-kiz-undo", source_key)
+    # Ключ на отправленную доставку: после новой отправки того же файла отмена снова алертит
+    key = f"{_source_idempotency_key('telegram:notification:transfer-kiz-undo', source_key)}:{delivery.id}"
     existing = db.execute(select(PendingEvent).where(PendingEvent.idempotency_key == key)).scalar_one_or_none()
     if existing is not None:
         return existing
@@ -147,7 +152,7 @@ def queue_transfer_kiz_undo_alert(db: Session, *, item: OrderItem) -> PendingEve
         idempotency_key=key,
         payload={
             "kind": "daily_reconciliation_alert",
-            "text": "TakSklad: отменён КИЗ после подготовки передачи. Нужна ручная проверка.",
+            "text": f"TakSklad: отменён КИЗ по файлу {source_file} после подготовки передачи. Нужна ручная проверка.",
         },
     )
     db.add(alert)
