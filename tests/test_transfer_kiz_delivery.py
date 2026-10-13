@@ -236,6 +236,27 @@ class TransferKizDeliveryTests(unittest.TestCase):
             "TakSklad: передача КИЗ по файлу Шаблон_14_10_2026.xlsx требует ручной проверки. Автоповтор отключён.",
         )
 
+    def test_each_blocked_delivery_event_of_one_file_alerts_once(self):
+        # Ключ алерта был по файлу: после первого алерта новая отправка того же файла,
+        # поставленная руками и снова упавшая, уходила в blocked молча
+        source_key = self._seed_delivery()
+        self.processor.send_document = mock.Mock(side_effect=RuntimeError("synthetic send failure"))
+        with mock.patch.dict(os.environ, self.client_env, clear=False):
+            self.processor.process_pending_transfer_kiz_deliveries()
+            with self.SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE,
+                    idempotency_key=f"transfer-kiz:client-delivery-manual-resend:test:{uuid.uuid4()}",
+                    status="pending",
+                    payload={"source_key": source_key},
+                ))
+                db.commit()
+            self.processor.process_pending_transfer_kiz_deliveries()
+            self.processor.process_pending_transfer_kiz_deliveries()
+
+        self.assertEqual([event.status for event in self._delivery_events()], ["blocked", "blocked"])
+        self.assertEqual(len(self._notification_events()), 2)
+
     def test_blocked_delivery_alert_without_file_keeps_generic_text(self):
         with self.SessionLocal() as db:
             event = PendingEvent(
