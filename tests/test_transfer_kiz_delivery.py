@@ -220,6 +220,36 @@ class TransferKizDeliveryTests(unittest.TestCase):
         self.assertEqual(len(alerts), 1)
         self.assertNotIn("import:", alerts[0].payload["text"])
 
+    def test_blocked_delivery_alert_names_the_file(self):
+        # Текст согласован Антоном 13.10: по прежнему «передача КИЗ требует ручной проверки»
+        # нельзя было понять, какой файл встал, не заходя в базу
+        self._seed_delivery(source_file="Шаблон_14_10_2026.xlsx")
+        self.processor.send_document = mock.Mock(side_effect=RuntimeError("synthetic send failure"))
+        with mock.patch.dict(os.environ, self.client_env, clear=False):
+            self.processor.process_pending_transfer_kiz_deliveries()
+
+        alerts = self._notification_events()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].payload["kind"], "daily_reconciliation_alert")
+        self.assertEqual(
+            alerts[0].payload["text"],
+            "TakSklad: передача КИЗ по файлу Шаблон_14_10_2026.xlsx требует ручной проверки. Автоповтор отключён.",
+        )
+
+    def test_blocked_delivery_alert_without_file_keeps_generic_text(self):
+        with self.SessionLocal() as db:
+            event = PendingEvent(
+                event_type=TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE,
+                idempotency_key=f"transfer-kiz:delivery:test:{uuid.uuid4()}",
+                status="processing",
+                payload={},
+            )
+            db.add(event)
+            db.flush()
+            alert = self.processor._queue_admin_alert(db, event)
+
+        self.assertEqual(alert.payload["text"], "TakSklad: передача КИЗ требует ручной проверки. Автоповтор отключён.")
+
     def test_stale_started_delivery_is_blocked_without_send(self):
         self._seed_delivery(status="processing", delivery_started=True, stale=True)
         with mock.patch.dict(os.environ, self.client_env, clear=False):

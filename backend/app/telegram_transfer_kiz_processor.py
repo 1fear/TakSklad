@@ -243,13 +243,19 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
         existing = db.execute(select(PendingEvent).where(PendingEvent.idempotency_key == key)).scalar_one_or_none()
         if existing is not None:
             return existing
+        source_file = _text((event.payload or {}).get("source_file")) or source_key.partition(":file:")[2].strip()
+        text = (
+            f"TakSklad: передача КИЗ по файлу {source_file} требует ручной проверки. Автоповтор отключён."
+            if source_file
+            else "TakSklad: передача КИЗ требует ручной проверки. Автоповтор отключён."
+        )
         alert = PendingEvent(
             event_type=TELEGRAM_NOTIFICATION_EVENT_TYPE,
             status="pending",
             idempotency_key=key,
             payload={
                 "kind": "daily_reconciliation_alert",
-                "text": "TakSklad: передача КИЗ требует ручной проверки. Автоповтор отключён.",
+                "text": text,
             },
         )
         db.add(alert)
