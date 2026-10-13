@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, event as sa_event, select
 from sqlalchemy.orm import sessionmaker
@@ -197,6 +198,79 @@ class TransferKizServiceTests(unittest.TestCase):
         self.assertEqual(first_id, second_id)
         self.assertEqual(alert_kind, "daily_reconciliation_alert")
         self.assertNotIn("import:", alert_text)
+
+    def test_undo_alert_names_the_file(self):
+        # Текст согласован Антоном 13.10: прежде нельзя было понять, какой файл задет
+        item_id, _delivery_id = self._seed_completed_delivery(source_file="Шаблон_14_10_2026.xlsx")
+        with self.SessionLocal() as db:
+            alert = queue_transfer_kiz_undo_alert(db, item=db.get(OrderItem, item_id))
+            text = alert.payload["text"]
+            kind = alert.payload["kind"]
+            db.commit()
+
+        self.assertEqual(kind, "daily_reconciliation_alert")
+        self.assertEqual(
+            text,
+            "TakSklad: отменён КИЗ по файлу Шаблон_14_10_2026.xlsx после подготовки передачи. Нужна ручная проверка.",
+        )
+
+    def test_undo_with_two_completed_deliveries_of_one_file_alerts_on_latest(self):
+        # После ручной переотправки у файла две завершённые доставки, и отмена скана
+        # из него падала на MultipleResultsFound, склад не мог снять код
+        item_id, first_id = self._seed_completed_delivery(completed_at=datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc))
+        latest_id = self._add_completed_resend(first_id, completed_at=datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc))
+        with self.SessionLocal() as db:
+            alert = queue_transfer_kiz_undo_alert(db, item=db.get(OrderItem, item_id))
+            key = alert.idempotency_key
+            db.commit()
+
+        self.assertTrue(key.endswith(f":{latest_id}"))
+
+    def test_undo_alert_comes_again_after_new_delivery_of_the_file(self):
+        # Ключ был по файлу: после первой отмены и новой отправки того же файла
+        # следующая отмена уже не давала алерта
+        item_id, first_id = self._seed_completed_delivery(completed_at=datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc))
+        with self.SessionLocal() as db:
+            first_alert_id = queue_transfer_kiz_undo_alert(db, item=db.get(OrderItem, item_id)).id
+            db.commit()
+        self._add_completed_resend(first_id, completed_at=datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc))
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, item_id)
+            second_alert_id = queue_transfer_kiz_undo_alert(db, item=item).id
+            repeat_alert_id = queue_transfer_kiz_undo_alert(db, item=item).id
+            db.commit()
+
+        self.assertNotEqual(first_alert_id, second_alert_id)
+        self.assertEqual(second_alert_id, repeat_alert_id)
+
+    def _seed_completed_delivery(self, *, source_file="orders.xlsx", completed_at=None):
+        event_id = self._seed_ready_check(source_file=source_file)
+        with self.SessionLocal() as db:
+            result = process_transfer_kiz_completion_check(db, db.get(PendingEvent, event_id))
+            delivery = db.get(PendingEvent, uuid.UUID(result["delivery_event_id"]))
+            delivery.status = "completed"
+            delivery.completed_at = completed_at or datetime.now(timezone.utc)
+            item_id = db.execute(select(OrderItem.id)).scalar_one()
+            delivery_id = delivery.id
+            db.commit()
+        return item_id, delivery_id
+
+    def _add_completed_resend(self, delivery_id, *, completed_at):
+        with self.SessionLocal() as db:
+            original = db.get(PendingEvent, delivery_id)
+            resend = PendingEvent(
+                event_type=TRANSFER_KIZ_CLIENT_DELIVERY_EVENT_TYPE,
+                action=original.action,
+                aggregate_type=original.aggregate_type,
+                aggregate_id=original.aggregate_id,
+                idempotency_key=f"transfer-kiz:client-delivery-manual-resend:test:{uuid.uuid4()}",
+                status="completed",
+                completed_at=completed_at,
+                payload=dict(original.payload or {}),
+            )
+            db.add(resend)
+            db.commit()
+            return resend.id
 
     def _seed_ready_check(
         self,
