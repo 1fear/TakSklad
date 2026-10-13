@@ -6,10 +6,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event as sa_event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.app.kiz_reports_service import build_kiz_source_file_report_xlsx
 from backend.app.models import Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.telegram_clients import TelegramProcessorPorts
 from backend.app.telegram_transfer_kiz_processor import TelegramTransferKizProcessor
@@ -88,6 +89,88 @@ class TransferKizDeliveryTests(unittest.TestCase):
         self.assertEqual(event.status, "failed")
         self.assertFalse(event.payload.get("delivery_started"))
         self.assertEqual(self.sent, [])
+
+    def test_report_build_loads_only_rows_of_its_own_file(self):
+        # 13.10 сборка отчёта поднимала всю таблицу строк (31,8 тысячи) и считала xlsx
+        # дольше лимита простоя транзакции, отправка КИЗ в группу ушла в blocked
+        source_key = self._seed_delivery(source_file="orders.xlsx")
+        for index in range(3):
+            self._seed_delivery(source_file=f"other-{index}.xlsx")
+        with self.SessionLocal() as db:
+            own_item_ids = [
+                item.id for item in db.execute(select(OrderItem)).scalars()
+                if item.raw_payload["source_file"] == "orders.xlsx"
+            ]
+
+        for key in (source_key, ""):
+            with self.subTest(source_key=key):
+                loaded_item_ids = []
+
+                def record_load(target, _context):
+                    loaded_item_ids.append(target.id)
+
+                sa_event.listen(OrderItem, "load", record_load)
+                try:
+                    with self.SessionLocal() as db:
+                        _content, filename = build_kiz_source_file_report_xlsx(db, "orders.xlsx", source_key=key)
+                finally:
+                    sa_event.remove(OrderItem, "load", record_load)
+
+                self.assertEqual(filename, "TakSklad_КИЗ_orders.xlsx")
+                self.assertEqual(loaded_item_ids, own_item_ids)
+
+    def test_delivery_survives_read_connection_lost_during_report_build(self):
+        # Соединение, на котором собирался отчёт, база может закрыть по простою;
+        # отметка о начале отправки не должна от него зависеть
+        with tempfile.TemporaryDirectory() as directory:
+            engine = create_engine(
+                f"sqlite+pysqlite:///{directory}/transfer-kiz-lost.db",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(engine)
+            self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            self.processor.session_factory = self.SessionLocal
+            self._seed_delivery()
+
+            def build_then_lose_connection(db, source_file, source_key=""):
+                result = build_kiz_source_file_report_xlsx(db, source_file, source_key=source_key)
+                # Как Postgres по idle_in_transaction_session_timeout: соединение умирает
+                # за спиной SQLAlchemy, и ошибка всплывает на следующем обращении,
+                # в том числе на откате при закрытии сессии
+                db.connection().connection.dbapi_connection.close()
+                return result
+
+            with mock.patch(
+                "backend.app.telegram_transfer_kiz_processor.build_kiz_source_file_report_xlsx",
+                side_effect=build_then_lose_connection,
+            ), mock.patch.dict(os.environ, self.client_env, clear=False):
+                self.processor.process_pending_transfer_kiz_deliveries()
+
+            delivery = self._delivery_events()[0]
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(delivery.status, "completed")
+            self.assertEqual(delivery.attempts, 1)
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_failed_pre_send_attempt_waits_before_next_try(self):
+        # 13.10 три попытки ушли подряд за полторы минуты в одном цикле воркера
+        self._seed_delivery()
+        with mock.patch(
+            "backend.app.telegram_transfer_kiz_processor.build_kiz_source_file_report_xlsx",
+            side_effect=RuntimeError("synthetic build failure"),
+        ), mock.patch.dict(os.environ, self.client_env, clear=False):
+            processed = self.processor.process_pending_transfer_kiz_deliveries()
+
+        delivery = self._delivery_events()[0]
+        self.assertEqual(processed, 1)
+        self.assertEqual(delivery.attempts, 1)
+        self.assertEqual(delivery.status, "failed")
+        self.assertGreater(
+            delivery.available_at.replace(tzinfo=None),
+            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=60),
+        )
+        self.assertEqual(self._notification_events(), [])
 
     def test_ambiguous_send_blocks_without_retry_and_queues_one_admin_alert(self):
         self._seed_delivery()
