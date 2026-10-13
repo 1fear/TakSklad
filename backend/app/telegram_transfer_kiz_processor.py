@@ -239,7 +239,9 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
     def _queue_admin_alert(self, db, event):
         source_key = _text((event.payload or {}).get("source_key"))
         digest = hashlib.sha256(source_key.encode("utf-8")).hexdigest()
-        key = f"telegram:notification:v1:transfer-kiz-delivery:{digest}"
+        # Ключ на событие доставки, а не на файл: иначе после первого алерта по файлу
+        # новая отправка того же файла, снова упавшая, уходила в blocked молча
+        key = f"telegram:notification:v1:transfer-kiz-delivery:{digest}:{event.id}"
         existing = db.execute(select(PendingEvent).where(PendingEvent.idempotency_key == key)).scalar_one_or_none()
         if existing is not None:
             return existing
