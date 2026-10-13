@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import DBAPIError
 
 from .db import SessionLocal
 from .kiz_reports_service import build_kiz_source_file_report_xlsx
@@ -26,6 +27,7 @@ from .transfer_kiz_service import (
 
 TRANSFER_KIZ_MAX_PRE_SEND_ATTEMPTS = 3
 TRANSFER_KIZ_STALE_AFTER = timedelta(minutes=10)
+TRANSFER_KIZ_RETRY_DELAY = timedelta(minutes=2)
 
 
 class TelegramTransferKizProcessor(TelegramProcessorDelegate):
@@ -143,7 +145,8 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
 
     def _deliver(self, event_id, owner):
         try:
-            with self._session_factory()() as db:
+            db = self._session_factory()()
+            try:
                 event = db.get(PendingEvent, event_id)
                 if event is None or event.status != "processing" or event.lease_owner != owner:
                     return
@@ -162,7 +165,16 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
                 content, filename = build_kiz_source_file_report_xlsx(
                     db, readiness["source_file"], source_key=source_key,
                 )
-                event.payload = {**payload, "delivery_started": True}
+            finally:
+                _close_read_session(db)
+            # Пока считается xlsx, читающая транзакция простаивает, и база может закрыть
+            # её соединение по idle_in_transaction_session_timeout; отметка о начале
+            # отправки пишется отдельной сессией и от этого соединения не зависит
+            with self._session_factory()() as db:
+                event = db.get(PendingEvent, event_id)
+                if event is None or event.status != "processing" or event.lease_owner != owner:
+                    return
+                event.payload = {**(event.payload or {}), "delivery_started": True}
                 event.lease_owner = None
                 event.lease_expires_at = None
                 db.commit()
@@ -208,6 +220,9 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
         event.last_error = reason
         event.lease_owner = None
         event.lease_expires_at = None
+        # Без паузы цикл воркера сразу забирал событие снова, и 13.10 все попытки
+        # сгорели за полторы минуты
+        event.available_at = datetime.now(timezone.utc) + TRANSFER_KIZ_RETRY_DELAY
 
     def _block_delivery(self, db, event, reason):
         event.status = "blocked"
@@ -247,6 +262,17 @@ class TelegramTransferKizProcessor(TelegramProcessorDelegate):
         if not target.startswith("-") or not target[1:].isdigit():
             raise RuntimeError("transfer_kiz_client_route_not_configured")
         return target
+
+
+def _close_read_session(db):
+    # Отчёт к этому моменту прочитан, а записи сессии уже закоммичены; если база
+    # закрыла соединение по простою, разрыв всплывает на откате при закрытии
+    # и не должен отменять отправку
+    try:
+        db.close()
+    except DBAPIError as exc:
+        if not exc.connection_invalidated:
+            raise
 
 
 def _safe_error(error) -> str:

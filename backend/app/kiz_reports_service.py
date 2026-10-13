@@ -5,7 +5,7 @@ from datetime import date, datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import ImportJob, Order, OrderItem
@@ -114,7 +114,7 @@ def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key:
 
     items = [
         item
-        for item in load_items(db)
+        for item in load_source_file_items(db, source_file, source_key)
         if item_matches_source(item, source_file=source_file, source_key=source_key)
     ]
     if not items:
@@ -393,6 +393,38 @@ def load_items(db: Session):
             selectinload(OrderItem.scan_codes),
         )
     ).scalars().all()
+
+
+def load_source_file_items(db: Session, source_file: str, source_key: str = ""):
+    # Отбор по имени файла идёт в SQL: 13.10 сборка отчёта по одному файлу поднимала
+    # всю таблицу строк, считалась дольше лимита простоя транзакции, и отправка КИЗ
+    # в группу ушла в blocked; точное совпадение по ключу остаётся за item_matches_source
+    return db.execute(
+        select(OrderItem)
+        .options(
+            selectinload(OrderItem.order),
+            selectinload(OrderItem.scan_codes),
+        )
+        .where(func.trim(OrderItem.raw_payload["source_file"].as_string()).in_(
+            source_file_candidates(source_file, source_key)
+        ))
+    ).scalars().all()
+
+
+def source_file_candidates(source_file, source_key=""):
+    # source_document_key кончается на ":file:<имя>" или равен "file:<имя>",
+    # поэтому имя файла в ключе можно взять с любого вхождения метки
+    if not source_key:
+        return [source_file]
+    candidates = set()
+    if source_key.startswith("file:"):
+        candidates.add(source_key[len("file:"):])
+    marker = ":file:"
+    position = source_key.find(marker)
+    while position != -1:
+        candidates.add(source_key[position + len(marker):])
+        position = source_key.find(marker, position + 1)
+    return sorted(candidates)
 
 
 def load_import_metadata_by_id(db: Session):
