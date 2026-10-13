@@ -1,6 +1,7 @@
 import re
 from io import BytesIO
 from datetime import date, datetime
+from types import SimpleNamespace
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -8,7 +9,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import ImportJob, Order, OrderItem
+from .models import ImportJob, Order, OrderItem, ScanCode
 from .orders_service import ApiError, COMPLETED_STATUSES
 from .reports_service import payment_group
 from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
@@ -51,7 +52,7 @@ KIZ_SUMMARY_HEADERS = [
 
 
 def list_completed_kiz_source_files(db: Session):
-    groups = group_items_by_source_document(load_items(db))
+    groups = group_items_by_source_document(load_list_items(db))
     import_metadata_by_id = load_import_metadata_by_id(db)
     result = []
     for source_key, items in sorted(groups.items(), key=lambda item: source_group_sort_key(item[1])):
@@ -79,7 +80,7 @@ def list_completed_kiz_source_files(db: Session):
 
 
 def list_completed_kiz_dates(db: Session):
-    items = load_items(db)
+    items = load_list_items(db)
     grouped = {}
     for item in items:
         order = item.order
@@ -132,7 +133,7 @@ def build_kiz_date_report_xlsx(db: Session, shipment_date: str):
 
     items = [
         item
-        for item in load_items(db)
+        for item in load_date_items(db, target_date, target_date)
         if item.order and item.order.order_date == target_date
     ]
     if not items:
@@ -157,7 +158,7 @@ def build_kiz_date_range_report_xlsx(db: Session, date_from: str, date_to: str):
         start_date, end_date = end_date, start_date
 
     items_by_date = {}
-    for item in load_items(db):
+    for item in load_date_items(db, start_date, end_date):
         order = item.order
         if not order or not order.order_date:
             continue
@@ -385,13 +386,84 @@ def parse_report_date(value):
     return None
 
 
-def load_items(db: Session):
+LIST_ITEM_PAYLOAD_KEYS = (
+    "source_file",
+    "backend_import_id",
+    "source_batch_key",
+    "source_import_id",
+    "kiz_released_blocks",
+    "completed_without_kiz",
+)
+
+
+def load_list_items(db: Session):
+    # Списки файлов и дат считаются по всей истории: ORM-объекты с полным raw_payload
+    # и пакетные догрузки selectinload на 32 тысячи строк шли 26-34 с, дольше таймаута
+    # бота (20 с) и лимита простоя транзакции; здесь только поля, которые читают списки
+    orders = {
+        row.id: SimpleNamespace(
+            id=row.id,
+            status=row.status,
+            order_date=row.order_date,
+            raw_payload=_present_values({"completed_without_kiz": row.completed_without_kiz}),
+        )
+        for row in db.execute(select(
+            Order.id,
+            Order.status,
+            Order.order_date,
+            Order.raw_payload["completed_without_kiz"].label("completed_without_kiz"),
+        ))
+    }
+    scans_by_item = {}
+    for row in db.execute(select(
+        ScanCode.order_item_id,
+        ScanCode.code,
+        ScanCode.raw_payload["block_quantity"].label("block_quantity"),
+    )):
+        scans_by_item.setdefault(row.order_item_id, []).append(SimpleNamespace(
+            code=row.code,
+            raw_payload=_present_values({"block_quantity": row.block_quantity}),
+        ))
+    payload_columns = [OrderItem.raw_payload[key].label(f"payload_{key}") for key in LIST_ITEM_PAYLOAD_KEYS]
+    return [
+        SimpleNamespace(
+            id=row.id,
+            order=orders.get(row.order_id),
+            status=row.status,
+            quantity_blocks=row.quantity_blocks,
+            scanned_blocks=row.scanned_blocks,
+            requires_kiz=row.requires_kiz,
+            created_at=row.created_at,
+            raw_payload=_present_values({key: row._mapping[f"payload_{key}"] for key in LIST_ITEM_PAYLOAD_KEYS}),
+            scan_codes=scans_by_item.get(row.id, []),
+        )
+        for row in db.execute(select(
+            OrderItem.id,
+            OrderItem.order_id,
+            OrderItem.status,
+            OrderItem.quantity_blocks,
+            OrderItem.scanned_blocks,
+            OrderItem.requires_kiz,
+            OrderItem.created_at,
+            *payload_columns,
+        ))
+    ]
+
+
+def _present_values(values):
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def load_date_items(db: Session, start_date, end_date):
+    # Отбор по дате отгрузки идёт в SQL: прежде отчёт по дате поднимал всю таблицу строк
     return db.execute(
         select(OrderItem)
+        .join(OrderItem.order)
         .options(
             selectinload(OrderItem.order),
             selectinload(OrderItem.scan_codes),
         )
+        .where(Order.order_date >= start_date, Order.order_date <= end_date)
     ).scalars().all()
 
 
