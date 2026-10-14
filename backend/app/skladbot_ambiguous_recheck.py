@@ -21,6 +21,7 @@ POST без ответа (таймаут, обрыв, 5xx) оставляет с
 вердикты в аудит), link (привязка без повторного POST), full (привязка и повтор)
 """
 
+import logging
 import os
 import re
 import time
@@ -28,7 +29,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import AuditLog, Order, OrderItem, PendingEvent
@@ -49,7 +50,6 @@ from .skladbot_contracts import (
 from .skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     build_order_dry_run,
-    count_pending_skladbot_create_events,
     default_create_processing_result,
     finish_skladbot_create_event,
     save_skladbot_create_result,
@@ -65,10 +65,11 @@ SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT_ENV = "SKLADBOT_AMBIGUOUS_RECHECK_DETAIL
 RECHECK_MODES = ("off", "observe", "link", "full")
 
 # 10.09.2026 каждая из десяти потерянных заявок появилась раньше нашей следующей
-# успешной отправки, не позже чем через 7,7 минуты после начала зависшего POST;
-# решающая вторая проверка идёт через 10 с лишним минут после него
+# успешной отправки, не позже чем через 7,7 минуты после начала зависшего POST
+# (оценка сверху по соседям, не распределение задержки); решающая вторая проверка
+# идёт примерно через 15,5 минуты после начала POST
 FIRST_CHECK_DELAY = timedelta(minutes=5)
-CONFIRM_DELAY = timedelta(minutes=5)
+CONFIRM_DELAY = timedelta(minutes=10)
 RECHECK_INTERVAL = timedelta(minutes=10)
 LIST_FAILURE_PAUSE = timedelta(minutes=3)
 ERROR_PAUSE = timedelta(minutes=30)
@@ -86,7 +87,11 @@ ORPHAN_WINDOW_DAYS = 1
 def skladbot_ambiguous_auto_recheck_mode(environ: dict[str, str] | None = None) -> str:
     environ = os.environ if environ is None else environ
     mode = normalize_text(environ.get(SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE_ENV)).casefold()
-    return mode if mode in RECHECK_MODES else "off"
+    if mode in RECHECK_MODES:
+        return mode
+    if mode:
+        logging.warning("%s=%r is not one of %s, recheck is off", SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE_ENV, mode, RECHECK_MODES)
+    return "off"
 
 
 def skladbot_ambiguous_auto_recheck_enabled(environ: dict[str, str] | None = None) -> bool:
@@ -138,7 +143,8 @@ def recheck_ambiguous_skladbot_creates(
     client = client or SkladBotClient(progress_callback=progress_callback)
     if not getattr(client, "configured", False):
         return default_recheck_result(status="not_configured")
-    list_limit = max(100, min(env_int(SKLADBOT_AMBIGUOUS_RECHECK_LIST_LIMIT_ENV, 500), 2000))
+    # 14.10.2026 500 заявок доходили ровно до границы покрытия, запас глубины нулевой
+    list_limit = max(100, min(env_int(SKLADBOT_AMBIGUOUS_RECHECK_LIST_LIMIT_ENV, 1000), 2000))
     try:
         list_items = [item for item in client.list_requests(limit=list_limit) if isinstance(item, dict)]
     except Exception as exc:
@@ -166,6 +172,7 @@ def recheck_ambiguous_skladbot_creates(
         "mode": mode,
         "list_size": len(listed),
         "oldest_listed_date": list_state["oldest"].isoformat() if list_state["oldest"] else "",
+        "list_days_back": (business_today(now) - list_state["oldest"]).days if list_state["oldest"] else None,
         "newest_listed_id": list_state["newest_id"],
         "newest_linked_id": list_state["newest_linked_id"],
         "list_sorted_newest_first": list_state["sorted"],
@@ -211,12 +218,20 @@ def recheck_ambiguous_skladbot_creates(
 
 
 def create_queue_busy(db: Session) -> bool:
-    if count_pending_skladbot_create_events(db):
-        return True
+    """POST создания заявки в полёте или с неизвестным исходом ещё не разобран
+
+    Событие в очереди без начатого POST заявки не создаёт, пока его не возьмут в
+    processing; событие удалённого заказа может висеть в failed бесконечно и не
+    должно останавливать сверку (14.10.2026, повторная рецензия)
+    """
     return bool(db.execute(
         select(func.count(PendingEvent.id))
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
-        .where(PendingEvent.status == "processing")
+        .where(or_(
+            PendingEvent.status == "processing",
+            (PendingEvent.status.in_(("pending", "failed")))
+            & PendingEvent.payload["post_state"].as_string().in_(("started", "response_received")),
+        ))
     ).scalar_one())
 
 
@@ -395,11 +410,19 @@ def classify_orphans(
             continue
         diagnostics = request_match_diagnostics(order, request)
         checks = diagnostics.get("checks") or {}
-        if diagnostics.get("matched") and not diagnostics.get("extra_request_products"):
+        if diagnostics_strong(diagnostics):
             strong.append(request_id)
         elif checks.get("date") and checks.get("client"):
             similar.append(request_id)
     return {"strong": strong, "similar": similar}
+
+
+def strong_match(order: Order, request: dict[str, Any]) -> bool:
+    return diagnostics_strong(request_match_diagnostics(order, request))
+
+
+def diagnostics_strong(diagnostics: dict[str, Any]) -> bool:
+    return bool(diagnostics.get("matched")) and not diagnostics.get("extra_request_products")
 
 
 def decide(
@@ -468,6 +491,9 @@ def apply_verdict(
         # другой процесс мог узнать эту заявку, пока шла сверка: заказ или ответ POST соседа
         if verdict["request_id"] in load_linked_request_ids(db, now) or create_queue_busy(db):
             verdict = {"verdict": "manual", "reason": "orphan_linked_meanwhile", "request_id": verdict["request_id"]}
+        elif not strong_match(order, orphans[verdict["request_id"]]):
+            # совпадение проверялось до блокировки, заказ мог измениться с тех пор
+            verdict = {"verdict": "manual", "reason": "order_changed_before_link", "request_id": verdict["request_id"]}
 
     if verdict["verdict"] == "link":
         request = orphans[verdict["request_id"]]
@@ -562,6 +588,9 @@ def record_observation(
     result: dict[str, Any],
 ) -> None:
     repeated = (state.get("observed_verdict"), state.get("last_reason")) == (verdict["verdict"], verdict["reason"])
+    # наблюдение не продолжает чистую серию: после возврата в full она начинается заново
+    state.pop("first_clean_at", None)
+    state.pop("first_clean_ambiguous_at", None)
     state.update({
         "observed_verdict": verdict["verdict"],
         "last_verdict": "observed",

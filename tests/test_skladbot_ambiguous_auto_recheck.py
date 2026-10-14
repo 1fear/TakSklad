@@ -163,10 +163,10 @@ class RecheckFixture(unittest.TestCase):
             })
             db.commit()
 
-    def seed_ambiguous_event(self, *, client=CLIENT, products=((PRODUCT, 1),)):
+    def seed_ambiguous_event(self, *, client=CLIENT, products=((PRODUCT, 1),), when=None):
         """Заказ и событие проходят настоящий путь до ambiguous: POST с таймаутом"""
         with self.SessionLocal() as db:
-            order = self.seed_order(db, client=client, products=products)
+            order = self.seed_order(db, client=client, products=products, when=when)
             row = {
                 "status": "ready",
                 "order_id": str(order.id),
@@ -233,6 +233,15 @@ class RecheckFixture(unittest.TestCase):
                 ).scalars()
             ]
 
+    def audit_payloads(self, event_id, action):
+        with self.SessionLocal() as db:
+            return [
+                dict(row.payload or {})
+                for row in db.execute(
+                    select(AuditLog).where(AuditLog.entity_id == str(event_id)).where(AuditLog.action == action)
+                ).scalars()
+            ]
+
     def incident_status(self, event_id):
         with self.SessionLocal() as db:
             return db.execute(
@@ -242,7 +251,7 @@ class RecheckFixture(unittest.TestCase):
     def two_clean_checks(self, client, mode="full"):
         start = datetime.now(timezone.utc)
         self.recheck(client, start + timedelta(minutes=6), mode=mode)
-        return self.recheck(client, start + timedelta(minutes=12), mode=mode)
+        return self.recheck(client, start + timedelta(minutes=17), mode=mode)
 
 
 class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
@@ -272,7 +281,7 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
         self.assertEqual(first["clean_first"], 1)
         self.assertEqual(self.event(event_id).status, "blocked")
 
-        second = self.recheck(client, start + timedelta(minutes=12))
+        second = self.recheck(client, start + timedelta(minutes=17))
         self.assertEqual(second["requeued"], 1)
         event = self.event(event_id)
         self.assertEqual(event.status, "pending")
@@ -281,6 +290,9 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
         self.assertEqual(event.payload.get("create_status"), "queued")
         self.assertEqual(event.payload["auto_recheck"]["retries"], 1)
         self.assertIn("skladbot_create_auto_recheck_requeued", self.audit_actions(event_id))
+        self.assertEqual(client.list_calls, [1000, 1000])
+        evidence = self.audit_payloads(event_id, "skladbot_create_auto_recheck_requeued")[0]
+        self.assertEqual(evidence["list_days_back"], 3)
 
         with self.SessionLocal() as db:
             processed = process_pending_skladbot_request_creates(db, client=client)
@@ -318,7 +330,8 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
         start = datetime.now(timezone.utc)
 
         self.recheck(client, start + timedelta(minutes=6))
-        result = self.recheck(client, start + timedelta(minutes=8))
+        # 8 минут после первой проверки: меньше разноса в 10 минут
+        result = self.recheck(client, start + timedelta(minutes=14))
 
         self.assertEqual(result["requeued"], 0)
         self.assertEqual(self.event(event_id).status, "blocked")
@@ -489,7 +502,7 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
         first = self.recheck(client, start + timedelta(minutes=6))
         self.assertEqual(first["linked"], 1)
         self.assertEqual(first["clean_first"], 1)
-        second = self.recheck(client, start + timedelta(minutes=12))
+        second = self.recheck(client, start + timedelta(minutes=17))
 
         self.assertEqual(second["requeued"], 1)
         self.assertEqual(self.order(linked_order_id).raw_payload.get("skladbot_request_number"), "WH-R-788")
@@ -668,7 +681,7 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
             db.commit()
         self.time_out_post(event_id)
 
-        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=12))
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=17))
 
         self.assertEqual(result["requeued"], 0)
         self.assertEqual(result["clean_first"], 1)
@@ -778,11 +791,11 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
 
         self.assertEqual(client.list_calls, [])
 
-    def test_create_in_flight_or_queued_postpones_recheck(self):
+    def test_create_in_flight_postpones_recheck(self):
         _order_id, event_id = self.seed_ambiguous_event()
         _busy_order_id, busy_event_id = self.seed_ambiguous_event(client='"SECOND SHOP" MCHJ')
         client = RecheckClient(self.covering_items())
-        for status, post_state in (("processing", "started"), ("pending", "retry_scheduled")):
+        for status, post_state in (("processing", "started"), ("pending", "started"), ("failed", "response_received")):
             with self.subTest(status):
                 with self.SessionLocal() as db:
                     busy = db.get(PendingEvent, busy_event_id)
@@ -796,6 +809,186 @@ class SkladBotAmbiguousAutoRecheckTests(RecheckFixture):
                 self.assertEqual(result["status"], "create_busy")
                 self.assertEqual(client.list_calls, [])
                 self.assertNotIn("auto_recheck", self.event(event_id).payload)
+
+    def test_zombie_failed_create_event_does_not_block_recheck(self):
+        # 14.10.2026, повторная рецензия: событие удалённого заказа висит в failed
+        # и берётся воркером каждый цикл, сверка не должна стоять из-за него
+        _order_id, event_id = self.seed_ambiguous_event()
+        zombie_order_id, zombie_event_id = self.seed_ambiguous_event(client='"SECOND SHOP" MCHJ')
+        with self.SessionLocal() as db:
+            zombie = db.get(PendingEvent, zombie_event_id)
+            zombie.status = "failed"
+            zombie.payload = {**zombie.payload, "post_state": "queued", "create_status": "create_failed"}
+            db.delete(db.get(Order, zombie_order_id))
+            db.commit()
+        client = RecheckClient(self.covering_items())
+
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["clean_first"], 1)
+
+    def test_requeue_in_same_run_does_not_block_link_of_next_candidate(self):
+        lost_order_id, lost_event_id = self.seed_ambiguous_event(client='"SECOND SHOP" MCHJ')
+        with self.SessionLocal() as db:
+            # прогон идёт по created_at: возвращаемое событие обрабатывается первым
+            db.get(PendingEvent, lost_event_id).created_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            db.commit()
+        client = RecheckClient(self.covering_items())
+        start = datetime.now(timezone.utc)
+        self.assertEqual(self.recheck(client, start + timedelta(minutes=6))["clean_first"], 1)
+        linked_order_id, _linked_event_id = self.seed_ambiguous_event()
+        orphan = list_item(795, self.today)
+        client.items = self.covering_items(orphan)
+        client.details[795] = request_detail(795)
+
+        result = self.recheck(client, start + timedelta(minutes=17))
+
+        self.assertEqual(result["requeued"], 1)
+        self.assertEqual(result["linked"], 1)
+        self.assertEqual(self.event(lost_event_id).status, "pending")
+        self.assertEqual(self.order(linked_order_id).raw_payload.get("skladbot_request_number"), "WH-R-795")
+        self.assertFalse(self.order(lost_order_id).raw_payload.get("skladbot_request_id"))
+
+    def test_neighbour_post_starting_during_recheck_blocks_link(self):
+        order_id, event_id = self.seed_ambiguous_event()
+        _neighbour_order_id, neighbour_event_id = self.seed_ambiguous_event(client='"SECOND SHOP" MCHJ')
+        orphan = list_item(796, self.today)
+        client = RecheckClient(self.covering_items(orphan), {796: request_detail(796)})
+        real_detail = client.get_request_detail
+
+        def detail_while_neighbour_starts_post(request_id):
+            with self.SessionLocal() as other:
+                neighbour = other.get(PendingEvent, neighbour_event_id)
+                neighbour.status = "processing"
+                neighbour.payload = {**neighbour.payload, "post_state": "started"}
+                other.commit()
+            return real_detail(request_id)
+
+        client.get_request_detail = detail_while_neighbour_starts_post
+
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["linked"], 0)
+        self.assertFalse(self.order(order_id).raw_payload.get("skladbot_request_id"))
+        self.assertEqual(self.event(event_id).payload["auto_recheck"]["last_reason"], "orphan_linked_meanwhile")
+
+    def test_event_changed_by_human_during_recheck_is_left_alone(self):
+        order_id, event_id = self.seed_ambiguous_event()
+        orphan = list_item(797, self.today)
+        client = RecheckClient(self.covering_items(orphan), {797: request_detail(797)})
+        real_detail = client.get_request_detail
+
+        def detail_while_human_rearms(request_id):
+            with self.SessionLocal() as other:
+                event = other.get(PendingEvent, event_id)
+                event.status = "pending"
+                event.payload = {**event.payload, "post_state": "retry_scheduled", "create_status": "queued"}
+                other.commit()
+            return real_detail(request_id)
+
+        client.get_request_detail = detail_while_human_rearms
+
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["linked"], 0)
+        self.assertFalse(self.order(order_id).raw_payload.get("skladbot_request_id"))
+        event = self.event(event_id)
+        self.assertEqual(event.status, "pending")
+        self.assertNotIn("auto_recheck", event.payload)
+
+    def test_order_changed_before_link_is_not_linked(self):
+        order_id, event_id = self.seed_ambiguous_event()
+        orphan = list_item(798, self.today)
+        client = RecheckClient(self.covering_items(orphan), {798: request_detail(798)})
+        real_lock = skladbot_ambiguous_recheck.lock_event
+
+        def lock_after_order_changes(db, locked_event_id):
+            # заказ меняется после сверки, но до блокировки события перед привязкой
+            with self.SessionLocal() as other:
+                order = other.get(Order, order_id)
+                order.items[0].quantity_blocks = 3
+                order.items[0].quantity_pieces = 30
+                other.commit()
+            return real_lock(db, locked_event_id)
+
+        with mock.patch.object(skladbot_ambiguous_recheck, "lock_event", lock_after_order_changes):
+            result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["linked"], 0)
+        self.assertFalse(self.order(order_id).raw_payload.get("skladbot_request_id"))
+
+    def test_event_older_than_two_days_is_not_rechecked(self):
+        _order_id, event_id = self.seed_ambiguous_event()
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, event_id)
+            event.created_at = datetime.now(timezone.utc) - timedelta(days=3)
+            db.commit()
+        client = RecheckClient(self.covering_items())
+
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(client.list_calls, [])
+
+    def test_old_unlinked_request_outside_window_does_not_block_requeue(self):
+        _order_id, event_id = self.seed_ambiguous_event()
+        old_orphan = list_item(520, self.today - timedelta(days=3))
+        client = RecheckClient(self.covering_items(old_orphan))
+
+        result = self.two_clean_checks(client)
+
+        self.assertEqual(result["requeued"], 1)
+        self.assertNotIn(520, client.detail_calls)
+
+    def test_orphan_with_two_owners_does_not_explain_it_for_third_candidate(self):
+        self.seed_ambiguous_event()
+        self.seed_ambiguous_event()
+        _third_order_id, third_event_id = self.seed_ambiguous_event(client='"SECOND SHOP" MCHJ')
+        orphan = list_item(799, self.today)
+        client = RecheckClient(self.covering_items(orphan), {799: request_detail(799)})
+
+        result = self.two_clean_checks(client)
+
+        self.assertEqual(result["requeued"] + result["linked"], 0)
+        event = self.event(third_event_id)
+        self.assertEqual(event.status, "blocked")
+        self.assertEqual(event.payload["auto_recheck"]["last_reason"], "unexplained_orphan")
+
+    def test_order_for_today_is_still_rechecked(self):
+        check_at = datetime.now(timezone.utc) + timedelta(minutes=6)
+        self.seed_ambiguous_event(when=business_today(check_at))
+        client = RecheckClient(self.covering_items())
+
+        result = self.recheck(client, check_at)
+
+        self.assertEqual(result["clean_first"], 1)
+
+    def test_order_pointing_to_other_event_is_not_rechecked(self):
+        order_id, event_id = self.seed_ambiguous_event()
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            order.raw_payload = {**order.raw_payload, "skladbot_create_event_id": str(uuid.uuid4())}
+            db.commit()
+        client = RecheckClient(self.covering_items())
+
+        result = self.recheck(client, datetime.now(timezone.utc) + timedelta(minutes=6))
+
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(client.list_calls, [])
+
+    def test_observe_mode_restarts_clean_series(self):
+        # 14.10.2026, повторная рецензия: full, observe, full засчитывал старую первую проверку
+        _order_id, event_id = self.seed_ambiguous_event()
+        client = RecheckClient(self.covering_items())
+        start = datetime.now(timezone.utc)
+
+        self.recheck(client, start + timedelta(minutes=6))
+        self.recheck(client, start + timedelta(minutes=17), mode="observe")
+        result = self.recheck(client, start + timedelta(minutes=28))
+
+        self.assertEqual(result["requeued"], 0)
+        self.assertEqual(result["clean_first"], 1)
 
     def test_observe_mode_records_verdicts_without_link_or_requeue(self):
         linked_order_id, linked_event_id = self.seed_ambiguous_event()
