@@ -8,6 +8,10 @@ from collections.abc import Callable
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
+from .skladbot_ambiguous_recheck import (
+    recheck_ambiguous_skladbot_creates,
+    skladbot_ambiguous_auto_recheck_enabled,
+)
 from .skladbot_client import env_int, notify_skladbot_progress
 from .skladbot_contracts import normalize_lookup_text
 from .skladbot_request_dry_run import process_pending_skladbot_request_creates
@@ -31,6 +35,7 @@ def run_worker_cycle(
     create_processor=None,
     return_processor=None,
     sync_processor=None,
+    ambiguous_recheck_processor=None,
     progress_callback: Callable[[str], None] | None = None,
     raise_on_error: bool = False,
 ) -> dict[str, object]:
@@ -63,6 +68,24 @@ def run_worker_cycle(
         cycle_errors.append(exc)
         logging.exception("SkladBot create worker failed")
 
+    # своя сессия и свой try: сбой перепроверки не задевает остальные шаги цикла
+    recheck_result: dict[str, object] | None = None
+    if skladbot_ambiguous_auto_recheck_enabled():
+        ambiguous_recheck_processor = ambiguous_recheck_processor or recheck_ambiguous_skladbot_creates
+        try:
+            with session_factory() as db:
+                if ambiguous_recheck_processor is recheck_ambiguous_skladbot_creates:
+                    recheck_result = ambiguous_recheck_processor(db, progress_callback=progress_callback)
+                else:
+                    recheck_result = ambiguous_recheck_processor(db)
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, "ambiguous_recheck_finished")
+            if recheck_result.get("checked"):
+                logging.info("SkladBot ambiguous recheck: %s", recheck_result)
+        except Exception as exc:
+            cycle_errors.append(exc)
+            logging.exception("SkladBot ambiguous recheck failed")
+
     sync_result: dict[str, object] = {}
     try:
         if sync_processor is update_orders_from_skladbot:
@@ -76,11 +99,14 @@ def run_worker_cycle(
         logging.exception("SkladBot worker failed")
     if cycle_errors and raise_on_error:
         raise RuntimeError("SkladBot worker cycle failed") from cycle_errors[0]
-    return {
+    cycle_result: dict[str, object] = {
         "create": create_result,
         "return": return_result,
         "sync": sync_result,
     }
+    if recheck_result is not None:
+        cycle_result["ambiguous_recheck"] = recheck_result
+    return cycle_result
 
 
 def main() -> None:

@@ -52,7 +52,7 @@ class SkladBotClientContract(Protocol):
 
     def post(self, path, payload=None): ...
 
-    def list_requests(self, type_id=None): ...
+    def list_requests(self, type_id=None, limit=None): ...
 
     def create_request(self, payload): ...
 
@@ -464,11 +464,11 @@ class SkladBotClient:
                 raise skladbot_response_error(response, write=True)
             return response.json()
 
-    def list_requests(self, type_id=None):
+    def list_requests(self, type_id=None, limit=None):
         return extract_list_items(self.get("/requests", {
             "customer_id": self.customer_id,
             "type_id": self.shipment_type_id if type_id is None else type_id,
-            "limit": self.limit,
+            "limit": self.limit if limit is None else limit,
         }))
 
     def create_request(self, payload):
