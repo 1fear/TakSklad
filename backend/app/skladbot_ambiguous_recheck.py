@@ -1,36 +1,45 @@
-"""Автоперепроверка создания заявки SkladBot после POST с неизвестным исходом.
+"""Автоперепроверка создания заявки SkladBot после POST с неизвестным исходом
 
 POST без ответа (таймаут, обрыв, 5xx) оставляет событие в blocked/ambiguous: заявка
-на стороне SkladBot могла создаться, а могла и нет, и повтор вслепую рискует дублем.
-Маркер TakSklad в заявку не уходит, поэтому найти её можно только по содержимому.
+на стороне SkladBot могла создаться, а могла и нет, и повтор вслепую рискует дублем
+Маркер TakSklad в заявку не уходит, поэтому найти её можно только по содержимому
 
 Здесь та же сверка, которой такие заказы разбирались руками 14.10.2026: список наших
-заявок отгрузки против заявок, уже привязанных к заказам. Заявка, которую не знает ни
-один заказ, это сирота, и потерянная заявка обязана оказаться среди сирот.
+заявок отгрузки против заявок, уже известных TakSklad; заявка, которую TakSklad не знает,
+это сирота, и потерянная заявка обязана оказаться среди сирот своего окна
 
-- ровно одна сирота совпала с заказом по всем проверкам: заявка привязывается без POST
-- среди сирот нет ни одной того же клиента на ту же дату, и так две проверки подряд
-  с разносом: событие возвращается в очередь на повторный POST, один раз на событие
-- остальное (несколько совпавших, похожая сирота, нечитаемая сирота, список не доходит
-  до заявок раньше POST, заказ изменился после POST): ручной разбор, как и раньше
+- ровно одна читаемая сирота совпала с заказом по всем проверкам и больше ни с кем:
+  заявка привязывается без POST
+- в окне нет ни одной сироты, кроме привязываемых к другим событиям этого прогона, и так
+  две проверки подряд с разносом: событие возвращается в очередь на повторный POST, один
+  раз на событие; любая необъяснённая сирота, даже чужая по содержимому, это ручной разбор,
+  потому что несовпадение по содержимому не доказывает, что заявка не наша
+- остальное (неполный или неупорядоченный список, нечитаемая деталь, похожая сирота,
+  изменённый заказ, лимит повторов): ручной разбор, как и раньше
 
-Выключено по умолчанию флагом SKLADBOT_AMBIGUOUS_AUTO_RECHECK_ENABLED.
+Режим задаёт SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE: off (по умолчанию), observe (только
+вердикты в аудит), link (привязка без повторного POST), full (привязка и повтор)
 """
 
 import os
+import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import AuditLog, Order, OrderItem, PendingEvent
+from .order_statuses import INACTIVE_ORDER_STATUSES
 from .representative_contacts import find_representative_contact
 from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
 from .skladbot_contracts import (
     business_timezone,
+    business_today,
     canonical_remote_request_id,
+    canonical_skladbot_request_link,
     normalize_request_payload,
     normalize_text,
     parse_date,
@@ -40,33 +49,48 @@ from .skladbot_contracts import (
 from .skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     build_order_dry_run,
+    count_pending_skladbot_create_events,
     default_create_processing_result,
     finish_skladbot_create_event,
     save_skladbot_create_result,
+    skladbot_create_event_ownership_conflict_reason,
     skladbot_create_requests_mode,
     stable_payload_hash,
 )
 
 
-SKLADBOT_AMBIGUOUS_AUTO_RECHECK_ENV = "SKLADBOT_AMBIGUOUS_AUTO_RECHECK_ENABLED"
+SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE_ENV = "SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE"
 SKLADBOT_AMBIGUOUS_RECHECK_LIST_LIMIT_ENV = "SKLADBOT_AMBIGUOUS_RECHECK_LIST_LIMIT"
 SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT_ENV = "SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT"
+RECHECK_MODES = ("off", "observe", "link", "full")
 
+# 10.09.2026 каждая из десяти потерянных заявок появилась раньше нашей следующей
+# успешной отправки, не позже чем через 7,7 минуты после начала зависшего POST;
+# решающая вторая проверка идёт через 10 с лишним минут после него
 FIRST_CHECK_DELAY = timedelta(minutes=5)
 CONFIRM_DELAY = timedelta(minutes=5)
 RECHECK_INTERVAL = timedelta(minutes=10)
+LIST_FAILURE_PAUSE = timedelta(minutes=3)
+ERROR_PAUSE = timedelta(minutes=30)
 CANDIDATE_MAX_AGE = timedelta(days=2)
 LINKED_LOOKBACK = timedelta(days=30)
 MAX_AUTO_RETRIES = 1
+CANDIDATE_LIMIT = 200
+DETAIL_TIME_BUDGET_SECONDS = 60
 # список заявок отдаёт только день создания, без времени и пояса: два дня запаса
 # покрывают любой сдвиг пояса SkladBot относительно бизнес-пояса
 COVERAGE_MARGIN_DAYS = 2
 ORPHAN_WINDOW_DAYS = 1
 
 
-def skladbot_ambiguous_auto_recheck_enabled(environ: dict[str, str] | None = None) -> bool:
+def skladbot_ambiguous_auto_recheck_mode(environ: dict[str, str] | None = None) -> str:
     environ = os.environ if environ is None else environ
-    return normalize_text(environ.get(SKLADBOT_AMBIGUOUS_AUTO_RECHECK_ENV)).casefold() in {"1", "true", "yes", "on"}
+    mode = normalize_text(environ.get(SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE_ENV)).casefold()
+    return mode if mode in RECHECK_MODES else "off"
+
+
+def skladbot_ambiguous_auto_recheck_enabled(environ: dict[str, str] | None = None) -> bool:
+    return skladbot_ambiguous_auto_recheck_mode(environ) != "off"
 
 
 def default_recheck_result(status: str = "completed") -> dict[str, Any]:
@@ -78,6 +102,7 @@ def default_recheck_result(status: str = "completed") -> dict[str, Any]:
         "linked": 0,
         "manual": 0,
         "unproven": 0,
+        "observed": 0,
         "errors": [],
     }
 
@@ -89,19 +114,27 @@ def recheck_ambiguous_skladbot_creates(
     now: datetime | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    if not skladbot_ambiguous_auto_recheck_enabled():
+    mode = skladbot_ambiguous_auto_recheck_mode()
+    if mode == "off":
         return default_recheck_result(status="disabled")
     if skladbot_create_requests_mode() != "enabled":
         return default_recheck_result(status="create_disabled")
     now = now or datetime.now(timezone.utc)
 
+    # пока чужой POST в полёте или ждёт очереди, его будущая заявка выглядела бы сиротой
+    if create_queue_busy(db):
+        db.commit()
+        return default_recheck_result(status="create_busy")
     candidates = select_recheck_candidates(db, now)
+    if not candidates:
+        db.commit()
+        return default_recheck_result()
+    # «самая новая известная заявка» снимается до списка: привязанная позже не делает список отставшим
+    linked_before = load_linked_request_ids(db, now)
     # база закрывается до сети: транзакция не простаивает, пока SkladBot отвечает
     db.commit()
-    result = default_recheck_result()
-    if not candidates:
-        return result
 
+    result = default_recheck_result()
     client = client or SkladBotClient(progress_callback=progress_callback)
     if not getattr(client, "configured", False):
         return default_recheck_result(status="not_configured")
@@ -109,65 +142,82 @@ def recheck_ambiguous_skladbot_creates(
     try:
         list_items = [item for item in client.list_requests(limit=list_limit) if isinstance(item, dict)]
     except Exception as exc:
+        error = sanitize_skladbot_error(exc)
+        for candidate in candidates:
+            pause_candidate(db, candidate, now + LIST_FAILURE_PAUSE, last_error=error)
         result["status"] = "list_failed"
-        result["errors"].append(sanitize_skladbot_error(exc))
+        result["errors"].append(error)
         return result
 
-    linked_ids = load_linked_request_ids(db, now)
+    linked = linked_before | load_linked_request_ids(db, now)
     db.commit()
     listed = listed_requests_by_id(list_items)
-    earliest_post_date = min(candidate["post_date"] for candidate in candidates)
-    orphan_ids = sorted(
-        request_id
-        for request_id, item in listed.items()
-        if request_id not in linked_ids and orphan_in_window(item, earliest_post_date)
-    )
-    detail_limit = max(1, env_int(SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT_ENV, 30))
-    orphans: dict[int, dict[str, Any] | None] = {}
-    if len(orphan_ids) <= detail_limit:
-        for request_id in orphan_ids:
-            try:
-                detail = client.get_request_detail(request_id)
-            except Exception:
-                detail = None
-            orphans[request_id] = (
-                normalize_request_payload(listed[request_id], detail) if isinstance(detail, dict) else None
-            )
-    coverage = list_coverage(listed, linked_ids)
+    list_state = list_coverage(list_items, listed, linked_before)
+    windows = {
+        candidate["event_id"]: sorted(
+            request_id
+            for request_id, item in listed.items()
+            if request_id not in linked and orphan_in_window(item, candidate["post_date"])
+        )
+        for candidate in candidates
+    }
+    orphans = read_orphan_details(client, listed, sorted({rid for window in windows.values() for rid in window}))
     evidence_base = {
+        "mode": mode,
         "list_size": len(listed),
-        "oldest_listed_date": coverage["oldest"].isoformat() if coverage["oldest"] else "",
-        "newest_listed_id": coverage["newest_id"],
-        "newest_linked_id": coverage["newest_linked_id"],
-        "orphan_ids": orphan_ids,
-        "orphans_over_detail_limit": len(orphan_ids) > detail_limit,
+        "oldest_listed_date": list_state["oldest"].isoformat() if list_state["oldest"] else "",
+        "newest_listed_id": list_state["newest_id"],
+        "newest_linked_id": list_state["newest_linked_id"],
+        "list_sorted_newest_first": list_state["sorted"],
     }
 
     matches = {
-        candidate["event_id"]: classify_orphans(db, candidate, orphans)
+        candidate["event_id"]: classify_orphans(db, candidate, windows[candidate["event_id"]], orphans)
         for candidate in candidates
     }
+    db.commit()
     strong_owners: dict[int, int] = {}
     for verdict in matches.values():
         for request_id in verdict["strong"]:
             strong_owners[request_id] = strong_owners.get(request_id, 0) + 1
-    db.commit()
+    explained = {
+        request_id
+        for verdict in matches.values()
+        if len(verdict["strong"]) == 1 and strong_owners.get(verdict["strong"][0]) == 1
+        for request_id in verdict["strong"]
+    }
 
     for candidate in candidates:
         result["checked"] += 1
+        window = windows[candidate["event_id"]]
         verdict = decide(
             candidate,
             matches[candidate["event_id"]],
             strong_owners,
-            coverage,
-            orphans_complete=len(orphan_ids) <= detail_limit and all(
-                orphans.get(request_id) is not None
-                for request_id in orphan_ids
-                if orphan_in_window(listed[request_id], candidate["post_date"])
-            ),
+            explained,
+            list_state,
+            window=window,
+            orphans=orphans,
         )
-        apply_verdict(db, candidate, verdict, orphans, listed, evidence_base, now, result)
+        evidence = {**evidence_base, "orphan_ids": window, **verdict}
+        try:
+            apply_verdict(db, candidate, verdict, orphans, evidence, now, result, mode)
+        except Exception as exc:
+            db.rollback()
+            error = sanitize_skladbot_error(exc)
+            result["errors"].append({"event_id": str(candidate["event_id"]), "error": error})
+            pause_candidate(db, candidate, now + ERROR_PAUSE, last_error=error)
     return result
+
+
+def create_queue_busy(db: Session) -> bool:
+    if count_pending_skladbot_create_events(db):
+        return True
+    return bool(db.execute(
+        select(func.count(PendingEvent.id))
+        .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+        .where(PendingEvent.status == "processing")
+    ).scalar_one())
 
 
 def select_recheck_candidates(db: Session, now: datetime) -> list[dict[str, Any]]:
@@ -178,15 +228,16 @@ def select_recheck_candidates(db: Session, now: datetime) -> list[dict[str, Any]
         .where(PendingEvent.payload["post_state"].as_string() == "ambiguous")
         .where(PendingEvent.created_at >= now - CANDIDATE_MAX_AGE)
         .order_by(PendingEvent.created_at, PendingEvent.id)
-        .limit(50)
+        .limit(CANDIDATE_LIMIT)
     ).scalars().all()
+    today = business_today(now)
     candidates = []
     for event in events:
         payload = event.payload if isinstance(event.payload, dict) else {}
-        if normalize_text(payload.get("post_state")) != "ambiguous":
-            continue
         # id из ответа POST значит, что заявка точно есть: это не сирота, а ручной разбор
         if canonical_remote_request_id(payload.get("post_response_request_id")):
+            continue
+        if skladbot_create_event_ownership_conflict_reason(event):
             continue
         ambiguous_at = parse_moment(payload.get("ambiguous_at")) or as_utc(event.updated_at)
         if ambiguous_at is None or now - ambiguous_at < FIRST_CHECK_DELAY:
@@ -195,29 +246,50 @@ def select_recheck_candidates(db: Session, now: datetime) -> list[dict[str, Any]
         next_check_at = parse_moment(state.get("next_check_at"))
         if next_check_at is not None and now < next_check_at:
             continue
-        post_started_at = parse_moment(payload.get("post_started_at")) or ambiguous_at
         order_id = parse_uuid(payload.get("order_id"))
-        if order_id is None:
+        order = db.get(Order, order_id) if order_id else None
+        if order is None or not order_open_for_recheck(order, event, today):
             continue
+        post_started_at = parse_moment(payload.get("post_started_at")) or ambiguous_at
         candidates.append({
             "event_id": event.id,
-            "order_id": order_id,
+            "order_id": order.id,
             "ambiguous_at": normalize_text(payload.get("ambiguous_at")),
             "post_date": post_started_at.astimezone(business_timezone()).date(),
         })
     return candidates
 
 
-def load_linked_request_ids(db: Session, now: datetime) -> set[int]:
-    """Заявки, которые уже знает TakSklad: привязанные к заказам и полученные в ответ на POST.
+def order_open_for_recheck(order: Order, event: PendingEvent, today) -> bool:
+    """Заказ всё ещё ждёт именно эту заявку: активен, дата не прошла, связи нет, указатель на это событие."""
+    raw_payload = order.raw_payload or {}
+    if normalize_text(order.status) in INACTIVE_ORDER_STATUSES:
+        return False
+    if order.order_date is None or order.order_date < today:
+        return False
+    if normalize_text(raw_payload.get("skladbot_request_id")) or normalize_text(raw_payload.get("skladbot_request_number")):
+        return False
+    pointer = normalize_text(raw_payload.get("skladbot_create_event_id"))
+    return not pointer or pointer == str(event.id)
 
-    Из raw_payload читается один ключ, а не весь документ: распаковка большого
-    JSON по тысячам заказов стоит секунды.
+
+def load_linked_request_ids(db: Session, now: datetime) -> set[int]:
+    """Заявки, которые уже знает TakSklad: привязанные к заказам и полученные в ответ на POST
+
+    Из raw_payload читаются отдельные ключи, а не весь документ: распаковка большого
+    JSON по тысячам заказов стоит секунды
     """
     values = list(db.execute(
         select(Order.raw_payload["skladbot_request_id"].as_string())
         .where(Order.created_at >= now - LINKED_LOOKBACK)
     ).scalars())
+    values.extend(
+        request_id_from_number(number)
+        for number in db.execute(
+            select(Order.raw_payload["skladbot_request_number"].as_string())
+            .where(Order.created_at >= now - LINKED_LOOKBACK)
+        ).scalars()
+    )
     for key in ("created_request_id", "post_response_request_id"):
         values.extend(db.execute(
             select(PendingEvent.payload[key].as_string())
@@ -232,6 +304,12 @@ def load_linked_request_ids(db: Session, now: datetime) -> set[int]:
     return linked
 
 
+def request_id_from_number(number: Any) -> str:
+    # id заявки SkladBot равен числовой части номера: WH-R-251621 это 251621
+    match = re.search(r"(\d+)\s*$", normalize_text(number))
+    return match.group(1) if match else ""
+
+
 def listed_requests_by_id(list_items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     listed = {}
     for item in list_items:
@@ -241,16 +319,19 @@ def listed_requests_by_id(list_items: list[dict[str, Any]]) -> dict[int, dict[st
     return listed
 
 
-def list_coverage(listed: dict[int, dict[str, Any]], linked_ids: set[int]) -> dict[str, Any]:
-    dates = [
-        parsed
-        for parsed in (parse_date(request_list_value(item, "created_at", "createdAt")) for item in listed.values())
-        if parsed
-    ]
+def list_coverage(
+    list_items: list[dict[str, Any]],
+    listed: dict[int, dict[str, Any]],
+    linked_before: set[int],
+) -> dict[str, Any]:
+    dates = [parse_date(request_list_value(item, "created_at", "createdAt")) for item in list_items]
+    known = [value for value in dates if value]
     return {
-        "oldest": min(dates) if dates else None,
+        "oldest": min(known) if known else None,
+        # id в списке идут не строго по убыванию (снято 14.10.2026), а дни идут
+        "sorted": len(known) == len(dates) and all(left >= right for left, right in zip(known, known[1:])),
         "newest_id": max(listed) if listed else 0,
-        "newest_linked_id": max(linked_ids) if linked_ids else 0,
+        "newest_linked_id": max(linked_before) if linked_before else 0,
     }
 
 
@@ -260,9 +341,47 @@ def orphan_in_window(item: dict[str, Any], post_date) -> bool:
     return created_on is None or created_on >= post_date - timedelta(days=ORPHAN_WINDOW_DAYS)
 
 
+def read_orphan_details(
+    client: Any,
+    listed: dict[int, dict[str, Any]],
+    orphan_ids: list[int],
+) -> dict[int, dict[str, Any] | None]:
+    """Деталь сироты, годная в доказательство, или None: тогда по окну ничего не утверждается."""
+    detail_limit = max(1, env_int(SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT_ENV, 30))
+    orphans: dict[int, dict[str, Any] | None] = {request_id: None for request_id in orphan_ids}
+    if len(orphan_ids) > detail_limit:
+        return orphans
+    started = time.monotonic()
+    for request_id in orphan_ids:
+        if time.monotonic() - started >= DETAIL_TIME_BUDGET_SECONDS:
+            break
+        try:
+            detail = client.get_request_detail(request_id)
+        except Exception:
+            continue
+        orphans[request_id] = evidence_request(request_id, listed[request_id], detail)
+    return orphans
+
+
+def evidence_request(request_id: int, list_item: dict[str, Any], detail: Any) -> dict[str, Any] | None:
+    if not isinstance(detail, dict):
+        return None
+    request = normalize_request_payload(list_item, detail)
+    canonical_id, number = canonical_skladbot_request_link(detail.get("id"), request.get("number"))
+    products = request.get("products") or []
+    if canonical_id != str(request_id) or not number:
+        return None
+    if not request.get("recipient") or not request.get("unloading_date"):
+        return None
+    if not products or not all(product.get("name") and product.get("amount") for product in products):
+        return None
+    return request
+
+
 def classify_orphans(
     db: Session,
     candidate: dict[str, Any],
+    window: list[int],
     orphans: dict[int, dict[str, Any] | None],
 ) -> dict[str, list[int]]:
     order = load_order(db, candidate["order_id"])
@@ -270,7 +389,8 @@ def classify_orphans(
     similar: list[int] = []
     if order is None:
         return {"strong": strong, "similar": similar}
-    for request_id, request in orphans.items():
+    for request_id in window:
+        request = orphans.get(request_id)
         if request is None:
             continue
         diagnostics = request_match_diagnostics(order, request)
@@ -286,24 +406,32 @@ def decide(
     candidate: dict[str, Any],
     matches: dict[str, list[int]],
     strong_owners: dict[int, int],
-    coverage: dict[str, Any],
+    explained: set[int],
+    list_state: dict[str, Any],
     *,
-    orphans_complete: bool,
+    window: list[int],
+    orphans: dict[int, dict[str, Any] | None],
 ) -> dict[str, Any]:
-    oldest = coverage["oldest"]
+    if not list_state["sorted"]:
+        return {"verdict": "unproven", "reason": "list_not_sorted_newest_first"}
+    oldest = list_state["oldest"]
     if oldest is None or oldest > candidate["post_date"] - timedelta(days=COVERAGE_MARGIN_DAYS):
         return {"verdict": "unproven", "reason": "list_does_not_reach_before_post"}
-    if coverage["newest_id"] < coverage["newest_linked_id"]:
+    if list_state["newest_id"] < list_state["newest_linked_id"]:
         return {"verdict": "unproven", "reason": "list_misses_newest_linked_request"}
-    if not orphans_complete:
+    if any(orphans.get(request_id) is None for request_id in window):
         return {"verdict": "unproven", "reason": "orphan_details_unavailable"}
     strong = matches["strong"]
     if len(strong) == 1 and strong_owners.get(strong[0]) == 1:
+        # archived и is_completed не проверяются: SkladBot ставит их всем заявкам (14.10.2026, 500 из 500)
         return {"verdict": "link", "reason": "single_matching_orphan", "request_id": strong[0]}
     if strong:
         return {"verdict": "manual", "reason": "several_matching_orphans", "request_ids": strong}
     if matches["similar"]:
         return {"verdict": "manual", "reason": "similar_orphan", "request_ids": matches["similar"]}
+    unexplained = [request_id for request_id in window if request_id not in explained]
+    if unexplained:
+        return {"verdict": "manual", "reason": "unexplained_orphan", "request_ids": unexplained}
     return {"verdict": "clean", "reason": "no_orphan_for_order"}
 
 
@@ -312,31 +440,40 @@ def apply_verdict(
     candidate: dict[str, Any],
     verdict: dict[str, Any],
     orphans: dict[int, dict[str, Any] | None],
-    listed: dict[int, dict[str, Any]],
-    evidence_base: dict[str, Any],
+    evidence: dict[str, Any],
     now: datetime,
     result: dict[str, Any],
+    mode: str,
 ) -> None:
     event = lock_event(db, candidate["event_id"])
     order = load_order(db, candidate["order_id"])
-    if event is None or order is None or not still_ambiguous(event, candidate, order):
+    if event is None or order is None or not still_ambiguous(event, candidate, order, now):
         db.commit()
         return
     payload = dict(event.payload or {})
     state = dict(payload.get("auto_recheck") or {})
+    # чистая серия принадлежит одному POST: новый ambiguous_at начинает её заново
+    if state.get("first_clean_ambiguous_at") != candidate["ambiguous_at"]:
+        state.pop("first_clean_at", None)
+        state.pop("first_clean_ambiguous_at", None)
     state["checks"] = int(state.get("checks") or 0) + 1
     state["last_checked_at"] = now.isoformat()
-    evidence = {**evidence_base, **verdict}
+    state.pop("last_error", None)
 
-    if verdict["verdict"] == "link" and request_linked_to_order(db, verdict["request_id"]):
-        # пока шла сверка, заявку привязал другой процесс: вторая привязка дала бы два заказа на одну заявку
-        verdict = {"verdict": "manual", "reason": "orphan_linked_meanwhile", "request_id": verdict["request_id"]}
+    if mode == "observe":
+        record_observation(db, event, payload, state, verdict, evidence, now, result)
+        return
+
+    if verdict["verdict"] == "link":
+        # другой процесс мог узнать эту заявку, пока шла сверка: заказ или ответ POST соседа
+        if verdict["request_id"] in load_linked_request_ids(db, now) or create_queue_busy(db):
+            verdict = {"verdict": "manual", "reason": "orphan_linked_meanwhile", "request_id": verdict["request_id"]}
 
     if verdict["verdict"] == "link":
         request = orphans[verdict["request_id"]]
         request_payload = payload.get("request_payload") if isinstance(payload.get("request_payload"), dict) else {}
-        state.update({"last_verdict": "linked", "last_reason": verdict["reason"]})
         state.pop("first_clean_at", None)
+        state.update({"last_verdict": "linked", "last_reason": verdict["reason"]})
         event.payload = {**payload, "auto_recheck": state}
         add_recheck_audit(db, event, "skladbot_create_auto_recheck_linked", evidence)
         create_result = save_skladbot_create_result(
@@ -348,18 +485,24 @@ def apply_verdict(
             status="created_recovered",
         )
         finish_skladbot_create_event(db, event, create_result, default_create_processing_result())
-        result["linked"] += 1
+        if create_result.get("status") == "created_recovered":
+            result["linked"] += 1
+        else:
+            result["manual"] += 1
         return
 
     if verdict["verdict"] == "clean":
         retries = int(state.get("retries") or 0)
-        if retries >= MAX_AUTO_RETRIES:
+        if mode != "full":
+            verdict = {"verdict": "manual", "reason": "requeue_disabled_by_mode"}
+        elif retries >= MAX_AUTO_RETRIES:
             verdict = {"verdict": "manual", "reason": "auto_retry_limit"}
         elif not order_payload_unchanged(db, order, payload):
             verdict = {"verdict": "manual", "reason": "order_changed_after_post"}
         elif not state.get("first_clean_at"):
             state.update({
                 "first_clean_at": now.isoformat(),
+                "first_clean_ambiguous_at": candidate["ambiguous_at"],
                 "next_check_at": (now + CONFIRM_DELAY).isoformat(),
                 "last_verdict": "clean_first",
                 "last_reason": verdict["reason"],
@@ -380,8 +523,22 @@ def apply_verdict(
             result["requeued"] += 1
             return
 
+    record_verdict(db, event, payload, state, verdict, {**evidence, **verdict}, now)
+    result[verdict["verdict"]] += 1
+
+
+def record_verdict(
+    db: Session,
+    event: PendingEvent,
+    payload: dict[str, Any],
+    state: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence: dict[str, Any],
+    now: datetime,
+) -> None:
     # чистая серия должна идти подряд: любой другой исход начинает её заново
     state.pop("first_clean_at", None)
+    state.pop("first_clean_ambiguous_at", None)
     repeated = (state.get("last_verdict"), state.get("last_reason")) == (verdict["verdict"], verdict["reason"])
     state.update({
         "last_verdict": verdict["verdict"],
@@ -390,9 +547,32 @@ def apply_verdict(
     })
     event.payload = {**payload, "auto_recheck": state}
     if not repeated:
-        add_recheck_audit(db, event, f"skladbot_create_auto_recheck_{verdict['verdict']}", {**evidence, **verdict})
+        add_recheck_audit(db, event, f"skladbot_create_auto_recheck_{verdict['verdict']}", evidence)
     db.commit()
-    result[verdict["verdict"]] += 1
+
+
+def record_observation(
+    db: Session,
+    event: PendingEvent,
+    payload: dict[str, Any],
+    state: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence: dict[str, Any],
+    now: datetime,
+    result: dict[str, Any],
+) -> None:
+    repeated = (state.get("observed_verdict"), state.get("last_reason")) == (verdict["verdict"], verdict["reason"])
+    state.update({
+        "observed_verdict": verdict["verdict"],
+        "last_verdict": "observed",
+        "last_reason": verdict["reason"],
+        "next_check_at": (now + CONFIRM_DELAY).isoformat(),
+    })
+    event.payload = {**payload, "auto_recheck": state}
+    if not repeated:
+        add_recheck_audit(db, event, "skladbot_create_auto_recheck_observed", evidence)
+    db.commit()
+    result["observed"] += 1
 
 
 def requeue_event(
@@ -403,8 +583,8 @@ def requeue_event(
     evidence: dict[str, Any],
     now: datetime,
 ) -> None:
-    state.pop("first_clean_at", None)
-    state.pop("next_check_at", None)
+    for key in ("first_clean_at", "first_clean_ambiguous_at", "next_check_at"):
+        state.pop(key, None)
     state.update({
         "retries": int(state.get("retries") or 0) + 1,
         "requeued_at": now.isoformat(),
@@ -430,11 +610,29 @@ def requeue_event(
     db.commit()
 
 
+def pause_candidate(db: Session, candidate: dict[str, Any], until: datetime, *, last_error: str = "") -> None:
+    """Пауза после сбоя: следующий цикл не повторяет тот же тяжёлый запрос к SkladBot."""
+    try:
+        event = lock_event(db, candidate["event_id"])
+        if event is None or event.status != "blocked":
+            db.commit()
+            return
+        payload = dict(event.payload or {})
+        state = dict(payload.get("auto_recheck") or {})
+        state.pop("first_clean_at", None)
+        state.pop("first_clean_ambiguous_at", None)
+        state.update({"next_check_at": until.isoformat(), "last_error": last_error})
+        event.payload = {**payload, "auto_recheck": state}
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def order_payload_unchanged(db: Session, order: Order, payload: dict[str, Any]) -> bool:
-    """Повторный POST уйдёт с текущим составом заказа: он обязан совпасть с тем, что ушло в первый раз.
+    """Повторный POST уйдёт с текущим составом заказа: он обязан совпасть с тем, что ушло в первый раз
 
     Порядок позиций в теле не значим и между сборками меняется (14.10.2026 у трёх
-    заказов из пяти), поэтому позиции сравниваются как набор.
+    заказов из пяти), поэтому позиции сравниваются как набор
     """
     sent = payload.get("request_payload")
     if not isinstance(sent, dict) or not sent:
@@ -459,23 +657,14 @@ def order_insensitive_hash(request_payload: dict[str, Any]) -> str:
     })
 
 
-def request_linked_to_order(db: Session, request_id: int) -> bool:
-    return db.execute(
-        select(Order.id)
-        .where(Order.raw_payload["skladbot_request_id"].as_string() == str(request_id))
-        .limit(1)
-    ).first() is not None
-
-
-def still_ambiguous(event: PendingEvent, candidate: dict[str, Any], order: Order) -> bool:
+def still_ambiguous(event: PendingEvent, candidate: dict[str, Any], order: Order, now: datetime) -> bool:
     payload = event.payload if isinstance(event.payload, dict) else {}
-    raw_payload = order.raw_payload or {}
     return (
         event.status == "blocked"
         and normalize_text(payload.get("post_state")) == "ambiguous"
         and normalize_text(payload.get("ambiguous_at")) == candidate["ambiguous_at"]
-        and not normalize_text(raw_payload.get("skladbot_request_id"))
-        and not normalize_text(raw_payload.get("skladbot_request_number"))
+        and not skladbot_create_event_ownership_conflict_reason(event)
+        and order_open_for_recheck(order, event, business_today(now))
     )
 
 
