@@ -38,7 +38,7 @@ Duplicate-only retry обязан вернуть `ImportResult.resolved_order_id
 | `smartup_confirmed` | Ответ или read-back подтвердил `B#W` | Создать/найти SkladBot intent по Order ID |
 | `skladbot_create_queued` | Durable create intent существует | SkladBot worker выполняет POST |
 | `skladbot_post_started` | POST мог дойти до SkladBot | Exact response-ID recovery или legacy marker reconciliation; без повторного POST |
-| `skladbot_ambiguous` | Результат POST не доказан | Manual review, exact response ID или legacy marker; без повторного POST |
+| `skladbot_ambiguous` | Результат POST не доказан | Manual review, exact response ID или legacy marker; без повторного POST (исключение: автоперепроверка в режиме `full`) |
 | `skladbot_created` | Canonical WH-R/ID сохранён | Terminal success |
 | `blocked_stock` | SkladBot подтвердил shortage 4xx | Сохранить Order, incident/manual review |
 | `payload_mismatch`, `blocked_validation`, `manual_review` | Автоматическое продолжение небезопасно | Решение оператора |
@@ -57,9 +57,51 @@ Consistency sweeper запускается каждым циклом Smartup wor
 
 Новые create payload не содержат `TakSklad ref`/`TSF` или Smartup ID в `comment` и `fields.comment.value`: там остаются только существующий бизнес-текст, тип оплаты и ТП/контакты. Sanitizer удаляет из старых еще не отправленных payload только полные технические строки, распознаваемые canonical marker/Smartup regex; похожая подстрока внутри бизнес-текста сохраняется. Внутренний deterministic marker, idempotency key, payload hash, event/order links и audit остаются в TakSklad и не считаются remote evidence. Smartup ID берется из exact `Order.raw_payload.source_order_id` и связанных строк заказа; daily связывает его только по сохраненному exact SkladBot request ID/number и показывает в XLSX-колонке `Smartup ID`, но не добавляет в Telegram summary.
 
-Timeout, network, 5xx, пустой/невалидный response ID и stale `post_state=started` считаются ambiguous. Если POST вернул request ID, recovery разрешён только через `GET /requests/show/{id}` с тем же ID и непустым WH-R. Без response ID новый markerless event переводится в `blocked/manual_review`: list/fuzzy lookup и повторный POST запрещены. Для legacy event, где сохранённый уже начатый request payload доказывает фактическую отправку marker, сохраняется exact-marker reconciliation; отсутствие marker в неполном list API не доказывает отсутствие заявки.
+Timeout, network, 5xx, пустой/невалидный response ID и stale `post_state=started` считаются ambiguous. Если POST вернул request ID, recovery разрешён только через `GET /requests/show/{id}` с тем же ID и непустым WH-R. Без response ID новый markerless event переводится в `blocked/manual_review`: list/fuzzy lookup и повторный POST запрещены (исключения описаны ниже). Для legacy event, где сохранённый уже начатый request payload доказывает фактическую отправку marker, сохраняется exact-marker reconciliation; отсутствие marker в неполном list API не доказывает отсутствие заявки.
 
-Признание по содержимому (`SKLADBOT_CONTENT_RECONCILE_ENABLED`, по умолчанию выключено) это единственное исключение из запрета list lookup, и оно не меняет payload: marker в SkladBot по-прежнему не уходит. Включённый флаг разрешает связать заявку без response ID и без marker, только когда выполнено всё сразу: совпали все проверки `request_match_diagnostics` (дата выгрузки, получатель, тип оплаты, состав по каждой позиции с блоками), в заявке нет лишних позиций, canonical ID совпал с ID из list и номер непустой, кандидат ровно один, и список заявок заведомо не обрезан лимитом (`len(list_requests()) < SKLADBOT_REQUESTS_LIMIT`). Обрезанный список не доказывает отсутствие второй такой же заявки, поэтому при усечении, при двух и более кандидатах и при любом расхождении событие уходит в manual review, как и раньше. Повторный POST этой веткой не выполняется никогда. Флаг выключен: поведение полностью прежнее, list lookup для markerless event запрещён.
+Признание по содержимому (`SKLADBOT_CONTENT_RECONCILE_ENABLED`, по умолчанию выключено) это одно из двух исключений из запрета list lookup (второе ниже, автоперепроверка), и оно не меняет payload: marker в SkladBot по-прежнему не уходит. Включённый флаг разрешает связать заявку без response ID и без marker, только когда выполнено всё сразу: совпали все проверки `request_match_diagnostics` (дата выгрузки, получатель, тип оплаты, состав по каждой позиции с блоками), в заявке нет лишних позиций, canonical ID совпал с ID из list и номер непустой, кандидат ровно один, и список заявок заведомо не обрезан лимитом (`len(list_requests()) < SKLADBOT_REQUESTS_LIMIT`). Обрезанный список не доказывает отсутствие второй такой же заявки, поэтому при усечении, при двух и более кандидатах и при любом расхождении событие уходит в manual review, как и раньше. Повторный POST этой веткой не выполняется никогда. Флаг выключен: поведение полностью прежнее, list lookup для markerless event запрещён.
+
+Автоперепроверка (`SKLADBOT_AMBIGUOUS_AUTO_RECHECK_MODE`, по умолчанию `off`, код в `backend/app/skladbot_ambiguous_recheck.py`) повторяет в воркере SkladBot ручную сверку, которой разбирались таймауты POST 10.09 и 14.10.2026
+
+Режимы:
+
+- `observe`: только вердикты в аудит
+- `link`: вдобавок привязка найденной заявки без POST
+- `full`: вдобавок возврат события в очередь на повторный POST
+
+Допуск:
+
+- событие `blocked` с `post_state=ambiguous`, без `post_response_request_id`, с пройденной проверкой ownership tuple, не старше двух суток и не раньше чем через 5 минут после ambiguous
+- заказ активен (не `completed`, `done`, `closed`, `returned`, `archived_no_kiz`, `cancelled`), дата выгрузки не раньше сегодняшней, `skladbot_request_id` и номера нет, указатель заказа ведёт на это событие
+- прогон не начинается, пока есть событие создания в `processing` или в `pending`/`failed` с `post_state` `started` или `response_received`: заявка соседнего POST в полёте выглядела бы сиротой; событие в очереди без начатого POST заявки не создаёт и сверку не держит, иначе событие удалённого заказа, висящее в `failed`, остановило бы её навсегда
+
+Сверка:
+
+- воркер читает наши заявки отгрузки (`SKLADBOT_AMBIGUOUS_RECHECK_LIST_LIMIT`, по умолчанию 1000: на 14.10.2026 500 заявок доходили ровно до границы покрытия; глубина пишется в аудит как `list_days_back`) и вычитает заявки, известные TakSklad: привязанные к заказам за 30 дней (по id и по числовой части номера) и полученные в ответ на POST за двое суток
+- остаток это сироты; потерянная заявка обязана быть среди сирот окна (созданы не раньше чем за день до POST)
+- список считается полным, только если дни в нём не возрастают (id идут не строго по убыванию, проверено 14.10.2026), самая старая заявка создана не позже чем за два дня до POST (в списке только день, без времени и пояса) и самый большой id не меньше самой новой заявки, известной до запроса списка
+- деталь сироты годится в доказательство, только если её id совпал со строкой списка, номер канонический, а получатель, дата выгрузки и позиции непусты; иначе сирота нечитаемая
+- детали читаются не больше `SKLADBOT_AMBIGUOUS_RECHECK_DETAIL_LIMIT` (по умолчанию 30) и не дольше 60 секунд за прогон
+
+Решение по событию:
+
+- ровно одна сирота совпала с заказом по всем проверкам `request_match_diagnostics` без лишних позиций, не совпала ни с одним другим ambiguous-событием прогона, а совпадение пересчитано на заказе под блокировкой (флаги `archived` и `is_completed` не смотрятся: SkladBot ставит их всем заявкам, 500 из 500 на 14.10.2026): после повторной проверки известных заявок и очереди создания под блокировкой события заявка привязывается штатным `save_skladbot_create_result(..., status="created_recovered")`, POST не выполняется (режимы `link` и `full`)
+- в окне нет ни одной сироты, кроме совпавших строго и единственно с другим событием этого прогона, состав заказа совпадает с отправленным (позиции сравниваются набором), и так две проверки подряд для одного и того же POST с разносом не меньше 10 минут: событие возвращается в очередь тем же re-arm, что руками (`pending`, `attempts=0`, `post_state=retry_scheduled`, `create_status=queued`), не больше одного раза на событие (только режим `full`)
+- всё остальное (неупорядоченный или неполный список, нечитаемая сирота, сирот больше лимита или не хватило времени, несколько совпавших, похожая сирота того же клиента на ту же дату, любая необъяснённая сирота, даже чужая по содержимому, изменённый заказ, лимит повторов): manual review, как и раньше, следующая проверка через 10 минут
+- сбой списка даёт паузу 3 минуты, исключение по событию паузу 30 минут без влияния на остальные события
+
+След и риск:
+
+- каждая смена исхода пишется в `audit_log` (`skladbot_create_auto_recheck_*`, сироты окна, границы списка, причина), повтор того же исхода нет; текущее состояние лежит в `payload.auto_recheck` события
+- остаточный риск: SkladBot создаёт заявку позже обеих проверок (решающая идёт примерно через 15,5 минуты после начала POST), тогда повтор даст дубль, видимый складу и в группе SkladBot через уведомление `notify`
+- по 10.09.2026 каждая из десяти потерянных заявок появилась раньше нашей следующей успешной отправки, то есть не позже чем через 7,7 минуты после начала POST (самая плотная граница 50 секунд); это оценка сверху по соседям, а не распределение задержки, хвост меряется в режиме `observe`
+
+Включение и откат:
+
+- порядок: `observe`, затем `link`, затем `full`; переменная задаётся в окружении `skladbot-worker`, нужен его перезапуск; значение не из списка режимов считается `off` и пишется предупреждением в лог воркера
+- что смотреть в `observe`: `SELECT payload->>'verdict', payload->>'reason', count(*) FROM audit_log WHERE action LIKE 'skladbot_create_auto_recheck_%' GROUP BY 1, 2` и сверка вердиктов с ручным разбором тех же событий; наблюдение не продолжает чистую серию, после возврата в `full` она начинается заново
+- возврат в `off` останавливает перепроверку сразу; события, уже возвращённые в очередь, идут штатным путём, `payload.auto_recheck` остаётся следом
+- автоматическая привязка или повтор закрывают событие, и гейт отчёта логистики снимается сам, как после ручного разбора
 
 Event с `attempts > 1` и пустым/неизвестным `post_state` также считается ambiguous: разрешён только exact legacy-marker recovery, иначе manual review. Повторный POST разрешён лишь при явном `post_state=retry_scheduled`; его `available_at` обязан переживать lease finalize. Любой direct processor и worker recovery до Order load или remote call проверяет ownership tuple create-event (`event_type`, `aggregate_type`, `aggregate_id`, `payload.order_id`); чужой или отсутствующий event pointer не может связать WH-R и создаёт manual-review incident/audit.
 
