@@ -11,6 +11,24 @@ DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 Вход для агентов с 24.10.2026: `CONTEXT.md` и `BACKLOG.md` в корне рабочей папки на маке Антона (файлы локальные,
 в git не входят, репозиторий публичный); этот файл остаётся журналом состояния прода по дельтам
 
+## Дельта 2026-10-24, вечер: backend `b00dd5b` (#221) на бою
+
+- Выкат по решению родительской сессии итогов (по поручению Антона) 24.10 в 16:06 UTC, суббота: склад не сканировал
+  25 часов, очередь событий пуста, других выкатов и живых сессий по проекту не было
+- Образ `taksklad-backend:local-b00dd5b`, digest `sha256:a92eca20…`, собран на сервере из `git archive b00dd5b`;
+  хеши всех 91 файлов `*.py` в `/app/app` совпали с архивом, от `7c64e57` отличается только `app/smartup_auto_import.py`
+- Окно писателей 16:06:10-16:06:43 UTC, 33 с; бэкап `taksklad-postgres-20261024T160611Z` (`BACKUP_OK`), миграции нет,
+  `EVENT_LEASE_RECOVERY_OK recovered=0`; пересозданы четыре сервиса backend, все `healthy`, compose dry-run `Running`;
+  серверное дерево сведено по одному файлу (прежний `.bak-7c64e57`); паспорт `manual-b00dd5b.json`, скрипт
+  `manual-b00dd5b/cutover.sh` (копия `manual-7c64e57` с заменой SHA, образа, digest, файла и метки)
+- После: `/version` и `/ready` `b00dd5b`, `/ready` 200 `ok`, `hot_path_error_count` 0, ошибок в журналах четырёх
+  сервисов за 5 минут 0, метка `def order_deleted_with_audit` есть во всех четырёх контейнерах
+- Смоук без записи `smartup_logistics_dependency_proof` в smartup-воркере: цикл 23.10 до выката `blocked`
+  `canonical_order_missing`, после `ready` с `orders_deleted_with_audit` 1 (130 → 129 доказанных заказов);
+  цикл 22.10 `ready` до и после; событие отчёта логистики за 23.10 осталось `completed` от 23.10, повторной
+  отправки нет, событий после выката 0
+- Frontend не менялся, `local-81fcc66`; `main` и бой по backend сведены
+
 ## Дельта 2026-10-24: backend `7c64e57` (#220) на бою с 16.10, #221 влит и не выкачен, `/ready` снова 200
 
 - Сверка 24.10.2026 с 15:30 по 15:45 UTC: `docker ps -a`, паспорта в `/opt/stacks/taksklad/deployments/`, `/version`
@@ -41,7 +59,7 @@ DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
 ### Открыто на 24.10
 
-- Выкат #221 ждёт слова Антона; до него штатное удаление smartup-заказа из слота дня снова требует ручного выпуска отчёта
+- Выкат #221 сделан вечером 24.10, см. дельту выше
 - Окно в 100 событий в `daily_report_failure_resolved_by_later_success` не исправлено: любое будущее падение дейли
   с поздним успехом всплывёт снова, когда успех уйдёт за сотню
 - Находки сторожа видны только в журнале хоста; `/ready` 503 простоял 15 дней незамеченным
