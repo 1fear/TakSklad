@@ -8,6 +8,45 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+Вход для агентов с 24.10.2026: [CONTEXT.md](../CONTEXT.md) и [BACKLOG.md](../BACKLOG.md) в корне репозитория,
+этот файл остаётся журналом состояния прода по дельтам
+
+## Дельта 2026-10-24: backend `7c64e57` (#220) на бою с 16.10, #221 влит и не выкачен, `/ready` снова 200
+
+- Сверка 24.10.2026 с 15:30 по 15:45 UTC: `docker ps -a`, паспорта в `/opt/stacks/taksklad/deployments/`, `/version`
+  и `/ready` изнутри `backend-api`, `pending_events`, `incidents`, журнал сторожа `/var/log/wms-alerts`, `version.json`
+  в `main`, релизы GitHub; запись в базу только одна, закрытие инцидентами ниже
+- #220 влит как `7c64e57` 16.10: запрет кода Chapman Brown OP из заказа 2 DRUGA (WH-R-252494); выкат по паспорту
+  `manual-7c64e57.json` 16.10 в 14:46 UTC, на нём все четыре сервиса backend; дельта статуса тогда не писалась
+- #221 влит как `b00dd5b` 24.10: проверка отчёта логистики пропускает заказ, удалённый штатно с аудитом
+  (`canonical_order_missing` больше не держит отчёт); по слову Антона не выкачен, `main` впереди боя только им
+- На бою: backend `local-7c64e57` (`backend-api`, `telegram-worker`, `skladbot-worker`, `smartup-auto-import-worker`,
+  все `healthy`), frontend `local-81fcc66`, схема `20260902_0023`; канал десктопа 2.0.57 кандидатом, `mandatory: false`,
+  `min_supported_version` 2.0.54
+- **`/ready` отвечал 503 с 09.10 при `blocking=0`:** `hot_path_error_count` 1, это `skladbot_daily_report_send`
+  от 06.07 (`coverage_status=partial`); `daily_report_failure_resolved_by_later_success` ищет поздний успех только среди
+  100 последних завершённых дейли, успех того дня стоял 105-м и выпал из окна; сторож писал `ready_not_ok`
+  в журнал хоста 883 раза, в Telegram находки не уходят (решение 13.09), поэтому никто не видел
+- Закрыто по прецеденту 08.10: снимок восьми `failed` дейли снят до правки, четыре без инцидента (06.07, 20.07,
+  21.07, 08.09) закрыты `create_incident` и `update_incident_status` кодом проекта, источник
+  `historical_daily_report_ack`, у каждого найден поздний успех того же дня (ранги 105, 93, 92, 45 при 134 завершённых
+  дейли и примерно одном новом в день, следующие два выпали бы через неделю с небольшим); сухой прогон с откатом, затем запись; после: `/ready` 200, `hot_path_error_count` 0,
+  инцидентов `resolved` 213 (было 209), `incident_status_changed` в аудите 4, `failed` и `blocked` без закрытого
+  инцидента 0; клиенту ничего не переотправлялось
+- Операционно за 17-24.10: сбой Smartup 20.10 (`UCP-29`, потом 503 и таймауты, 15:00-18:29 по Ташкенту), 46 заказов
+  ввезены штатным импортом из конструктора отчётов, 22.10 ещё 17 потерянных сделок (были выведены из «В обработке»),
+  23.10 заказ WH-R-256276 удалён штатной `delete_active_order`, отчёт на 26.10 выпущен вручную; порядок в памяти
+  проекта (`taksklad-smartup-manual-import-from-report-constructor`, `taksklad-smartup-status-sweep-hides-deals`,
+  `taksklad-prod-order-surgery`)
+
+### Открыто на 24.10
+
+- Выкат #221 ждёт слова Антона; до него штатное удаление smartup-заказа из слота дня снова требует ручного выпуска отчёта
+- Окно в 100 событий в `daily_report_failure_resolved_by_later_success` не исправлено: любое будущее падение дейли
+  с поздним успехом всплывёт снова, когда успех уйдёт за сотню
+- Находки сторожа видны только в журнале хоста; `/ready` 503 простоял 15 дней незамеченным
+- Полный список открытого: [BACKLOG.md](../BACKLOG.md)
+
 ## Дельта 2026-10-13: backend `b03f851` (#212, #213, #215, #216, #218) на бою, КИЗ по файлу на 14.10 доставлены, меню КИЗов в боте снова отвечает
 
 - Сверка 13.10.2026 с 09:30 по 10:25 UTC: `docker ps -a`, `/version`, `/health`, `/ready` изнутри
