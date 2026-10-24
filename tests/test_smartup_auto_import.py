@@ -55,6 +55,8 @@ from backend.app.smartup_auto_import import (
 from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
 from backend.app.imports_service import normalize_import_row, preserve_order_smartup_identity
+from backend.app.order_actions_service import delete_active_order
+from backend.app.schemas import AdminOrderActionRequest
 from backend.app.telegram_routing_contract import load_telegram_routing_contract
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE, list_skladbot_dry_runs
@@ -1376,6 +1378,112 @@ class SmartupAutoImportTests(unittest.TestCase):
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
         self.assertIn("Orders", workbook.sheetnames)
         workbook.close()
+
+    def run_final_cycle_with_terminal_fulfillment(self, db, config, fake, sender):
+        for hour, minute in ((12, 0), (15, 0), (17, 50)):
+            run_due_smartup_auto_imports(
+                db,
+                config,
+                now=datetime(2026, 7, 3, hour, minute, tzinfo=ZoneInfo("Asia/Tashkent")),
+                smartup_client=fake,
+                telegram_sender=sender,
+            )
+        for order in db.execute(select(Order)).scalars().all():
+            event = PendingEvent(
+                event_type=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+                status="completed",
+                idempotency_key=f"synthetic:terminal-create:{order.id}",
+                payload={"last_result": {"status": "created"}},
+            )
+            db.add(event)
+            db.flush()
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_create_event_id": str(event.id),
+            }
+            db.add(order)
+        db.commit()
+
+    def final_cycle_fixture(self, tmp_dir):
+        fake = FakeSmartupClient([
+            sample_order(deal_id="saturday", deal_time="03.07.2026 08:49:15", delivery_date="04.07.2026",
+                         person_name="SATURDAY MCHJ"),
+            sample_order(deal_id="sunday", deal_time="03.07.2026 10:17:51", delivery_date="05.07.2026",
+                         person_name="SUNDAY MCHJ"),
+            sample_order(deal_id="monday", deal_time="03.07.2026 11:33:17", delivery_date="06.07.2026",
+                         person_name="MONDAY MCHJ"),
+        ])
+        config = self.config(
+            tmp_dir,
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            client_chat_id="-1002001",
+            logistics_chat_id="-1002002",
+        )
+        return fake, FakeTelegramSender(), config
+
+    def test_due_logistics_skips_order_deleted_with_audit_after_final_slot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake, sender, config = self.final_cycle_fixture(tmp_dir)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    self.run_final_cycle_with_terminal_fulfillment(db, config, fake, sender)
+                    clients_before = sorted(db.execute(select(Order.client)).scalars().all())
+                    deleted = db.execute(select(Order).where(Order.client == "SATURDAY MCHJ")).scalar_one()
+                    delete_active_order(db, str(deleted.id), AdminOrderActionRequest(reason="заявка удалена в SkladBot"))
+                    proof = smartup_logistics_dependency_proof(db, config, date(2026, 7, 3))
+                    result = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 3, 17, 50, 30, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
+
+        self.assertEqual(clients_before, ["MONDAY MCHJ", "SATURDAY MCHJ", "SUNDAY MCHJ"])
+        self.assertEqual(proof["status"], "ready", proof)
+        self.assertEqual(proof["orders_deleted_with_audit"], 1)
+        self.assertEqual(proof["orders_proven"], 2)
+        due = next(
+            item for item in result
+            if item.get("export_date") == "2026-07-03" and item.get("status") == "logistics_due"
+        )
+        self.assertEqual(due["logistics_reports"][0]["status"], "sent")
+        logistics_documents = [document for document in sender.documents if document[0] == "-1002002"]
+        self.assertEqual(len(logistics_documents), 1)
+        workbook = openpyxl.load_workbook(BytesIO(logistics_documents[0][1]), data_only=True)
+        cells = {str(cell) for row in workbook["Orders"].iter_rows(values_only=True) for cell in row if cell}
+        workbook.close()
+        self.assertTrue({"MONDAY MCHJ", "SUNDAY MCHJ"} <= cells, cells)
+        self.assertNotIn("SATURDAY MCHJ", cells)
+
+    def test_due_logistics_stays_blocked_when_order_vanishes_without_audit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake, sender, config = self.final_cycle_fixture(tmp_dir)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    self.run_final_cycle_with_terminal_fulfillment(db, config, fake, sender)
+                    db.delete(db.execute(select(Order).where(Order.client == "SATURDAY MCHJ")).scalar_one())
+                    db.commit()
+                    proof = smartup_logistics_dependency_proof(db, config, date(2026, 7, 3))
+                    result = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 3, 17, 50, 30, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
+
+        self.assertEqual(proof["status"], "blocked")
+        self.assertEqual(proof["reason"], "canonical_order_missing")
+        gate = next(
+            item for item in result
+            if item.get("export_date") == "2026-07-03"
+            and item.get("status") in {"logistics_blocked", "logistics_due"}
+        )
+        self.assertEqual(gate["status"], "logistics_blocked")
+        self.assertEqual(gate["reason"], "canonical_order_missing")
+        self.assertEqual([document for document in sender.documents if document[0] == "-1002002"], [])
 
     def test_scheduled_target_delivery_date_is_next_calendar_day(self):
         self.assertEqual(scheduled_smartup_target_delivery_date(date(2026, 7, 1)), date(2026, 7, 2))

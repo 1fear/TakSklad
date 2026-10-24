@@ -81,6 +81,8 @@ SMARTUP_AUTO_IMPORT_EVENT_TYPE = "smartup_auto_import_run"
 SMARTUP_LOGISTICS_REPORT_EVENT_TYPE = "smartup_logistics_report"
 SMARTUP_CLIENT_EXPORT_EVENT_TYPE = "smartup_client_export"
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
+# Действие аудита, которое пишет штатный delete_active_order (order_actions_service)
+ORDER_DELETED_FROM_ACTIVE_AUDIT_ACTION = "order_deleted_from_active"
 SMARTUP_DUPLICATE_DEAL_ALERT_KIND = "smartup_duplicate_deal_skipped"
 DUPLICATE_DEAL_ALERT_ID_LIMIT = 20
 LOGISTICS_ZONE_ALERT_KIND = "logistics_zone_unassigned_order"
@@ -776,12 +778,19 @@ def smartup_logistics_dependency_proof(
             )
             completed_cycles += 1
 
+    deleted_with_audit = 0
     for order_id in sorted(order_ids):
         try:
             order = db.get(Order, uuid.UUID(order_id))
         except ValueError:
             order = None
         if order is None:
+            # Заказ, снятый штатным удалением после слота, в отчёт не попадёт и
+            # не должен держать его: 23.10.2026 такой заказ молча остановил
+            # отчёт логистики дня. Пропажа без аудита по-прежнему блокирует
+            if order_deleted_with_audit(db, order_id):
+                deleted_with_audit += 1
+                continue
             return _blocked_dependency("canonical_order_missing", completed_cycles, len(order_ids))
         create_event_id = normalize_text((order.raw_payload or {}).get("skladbot_create_event_id"))
         try:
@@ -808,9 +817,20 @@ def smartup_logistics_dependency_proof(
         "reason": "all_smartup_slots_imports_client_exports_and_fulfillments_terminal",
         "expected_cycles": len(expected_slots) * len(expected_targets),
         "completed_cycles": completed_cycles,
-        "orders_proven": len(order_ids),
+        "orders_proven": len(order_ids) - deleted_with_audit,
+        "orders_deleted_with_audit": deleted_with_audit,
         "delivery_dates": sorted(delivery_dates),
     }
+
+
+def order_deleted_with_audit(db: Session, order_id: str) -> bool:
+    return db.execute(
+        select(AuditLog.id)
+        .where(AuditLog.action == ORDER_DELETED_FROM_ACTIVE_AUDIT_ACTION)
+        .where(AuditLog.entity_type == "order")
+        .where(AuditLog.entity_id == order_id)
+        .limit(1)
+    ).first() is not None
 
 
 def _blocked_dependency(reason: str, completed_cycles: int, orders_proven: int) -> dict[str, Any]:
