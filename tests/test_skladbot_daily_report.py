@@ -45,6 +45,7 @@ from backend.app.skladbot_daily_report import (
     request_representative_zone,
     summarize_daily_report,
 )
+from backend.app.skladbot_contracts import normalize_request_payload
 from backend.app.telegram_scheduled_report_processor import TelegramScheduledReportProcessor
 from backend.app.telegram_worker import (
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
@@ -2548,6 +2549,76 @@ class SkladBotDailyReportTests(unittest.TestCase):
             {row["Код маркировки"] for row in product_rows if row["Код маркировки"]},
             {row["code"] for row in report["request_kiz_rows"]},
         )
+
+    def test_shipment_fact_is_skladbot_delivery_amount_not_ordered_amount(self):
+        # 28.10.2026: склад закрыл заявку без Brown OP (на полке 0), а отчёт писал факт по заказанному
+        def shipment(request_id, is_completed, products):
+            request = normalize_request_payload(
+                {"id": request_id},
+                {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "type": "Отгрузка 3PL",
+                    "isCompleted": is_completed,
+                    "createdAt": "28.10.2026",
+                    "comment": "Терминал\nОПТ",
+                    "products": products,
+                },
+            )
+            request["category"] = categorize_request_type(request["type"])
+            return request
+
+        cut = shipment(258566, True, [
+            {"name": "Chapman Brown OP 20 UZ - KingSize", "barcode": "4006396053978",
+             "amount": 25, "acceptedAmount": 0, "delivery_amount": 0},
+            {"name": "Chapman Green OP 20 UZ - KingSize", "barcode": "4006396104441",
+             "amount": 10, "acceptedAmount": 0, "delivery_amount": 10},
+        ])
+        unfinished = shipment(258567, False, [
+            {"name": "Chapman Red OP 20 UZ - KingSize", "barcode": "4006396053947",
+             "amount": 3, "acceptedAmount": 0, "delivery_amount": 0},
+        ])
+        legacy = shipment(258568, True, [
+            {"name": "Chapman Gold SSL 20 UZ - SuperSlim", "barcode": "4006396054005", "amount": 4},
+        ])
+        report = {
+            "report_date": date(2026, 10, 28),
+            "requests": [cut, unfinished, legacy],
+            "request_kiz_rows": [{
+                "request_id": "258566",
+                "request_number": "WH-R-258566",
+                "product": "Chapman Green OP 20",
+                "code": "0104006396104441217UNIT-GREEN",
+                "scan_type": "unit",
+                "block_quantity": 1,
+            }],
+        }
+        report["summary"] = summarize_daily_report(report)
+
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 14)
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+        self.assertEqual(workbook["Сводка"]["B2"].value, 14)
+        self.assertEqual(workbook["Сводка"]["C2"].value, 3)
+        request_rows = worksheet_rows_by_header(workbook["Заявки"])
+        self.assertEqual(
+            [(row["Номер"], row["Статус"], row["Блоков план"], row["Блоков факт"]) for row in request_rows],
+            [
+                ("WH-R-258566", "Выполнена", 35, 10),
+                ("WH-R-258567", "Не выполнена", 3, 0),
+                ("WH-R-258568", "Выполнена", 4, 4),
+            ],
+        )
+        product_rows = worksheet_rows_by_header(workbook["Товары заявок"])
+        self.assertEqual(
+            [(row["Заявка"], row["Товар"], row["Код маркировки"]) for row in product_rows],
+            [
+                ("WH-R-258566", "Chapman Green OP 20 UZ - KingSize", "0104006396104441217UNIT-GREEN"),
+                ("WH-R-258567", "Chapman Red OP 20 UZ - KingSize", None),
+                ("WH-R-258568", "Chapman Gold SSL 20 UZ - SuperSlim", None),
+            ],
+        )
+        self.assertIn("Отгрузка: 3 заявок, 14 блоков", build_skladbot_daily_report_message(report))
 
     def test_requests_sheet_splits_comment_into_payment_and_phones(self):
         report = daily_template_report()

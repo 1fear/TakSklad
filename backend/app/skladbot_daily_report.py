@@ -53,6 +53,10 @@ REQUEST_CATEGORIES = (
     REQUEST_CATEGORY_RECEIVING,
     REQUEST_CATEGORY_OTHER,
 )
+SHIPMENT_REQUEST_CATEGORIES = (
+    REQUEST_CATEGORY_SHIPMENT,
+    REQUEST_CATEGORY_DEFECT_SHIPMENT,
+)
 CODE_TYPE_LABELS = {
     SCAN_TYPE_UNIT: "Блок",
     SCAN_TYPE_AGGREGATE_BOX: "Короб",
@@ -1498,6 +1502,13 @@ def report_product_blocks(product: dict[str, Any], category: str) -> int:
             return accepted_amount
         if accepted_amount > 0:
             return accepted_amount
+    if normalize_text(category) in SHIPMENT_REQUEST_CATEGORIES:
+        # amount is what was ordered; delivery_amount is what the warehouse shipped
+        delivery_amount = parse_int(product.get("delivery_amount"))
+        if product.get("delivery_amount_present"):
+            return delivery_amount
+        if delivery_amount > 0:
+            return delivery_amount
     return parse_int(product.get("amount"))
 
 
@@ -1683,6 +1694,8 @@ def write_request_products_sheet(
             ]
             product_kiz_rows = kiz_rows_by_product.get(position) or []
             if not product_kiz_rows:
+                if product_not_shipped(request, product):
+                    continue
                 sheet.append([*product_prefix, "", "", ""])
                 continue
             for row in product_kiz_rows:
@@ -1695,6 +1708,17 @@ def write_request_products_sheet(
                 *kiz_row_code_cells(row),
             ])
     apply_header_style(sheet)
+
+
+def product_not_shipped(request: dict[str, Any], product: dict[str, Any]) -> bool:
+    """A completed shipment where the warehouse shipped none of this product."""
+    category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
+    return (
+        category in SHIPMENT_REQUEST_CATEGORIES
+        and bool(request.get("is_completed"))
+        and bool(product.get("delivery_amount_present"))
+        and parse_int(product.get("delivery_amount")) == 0
+    )
 
 
 def kiz_row_code_cells(row: dict[str, Any]) -> list[Any]:
